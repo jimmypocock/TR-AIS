@@ -2,6 +2,8 @@
 
 Talk to your TR-8S like a band member. Describe the beat you want in natural language, and AI programs it in real time.
 
+![TR-AIS Screenshot](docs/screenshot.png)
+
 ## Setup
 
 ```bash
