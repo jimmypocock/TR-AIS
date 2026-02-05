@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+mido
+python-rtmidi
+anthropic
+python-dotenv
