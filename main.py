@@ -65,6 +65,10 @@ class SessionCreate(BaseModel):
     name: Optional[str] = None
 
 
+class MidiDeviceSelect(BaseModel):
+    device: str
+
+
 # --- WebSocket Broadcast ---
 async def broadcast(data: dict):
     dead = []
@@ -94,13 +98,20 @@ async def startup():
 
     load_sessions()
 
-    # Connect to TR-8S
-    try:
-        engine = MIDIEngine("TR-8S")
-        engine.on_step = on_step
-        print("✅ Connected to TR-8S via MIDI")
-    except Exception as e:
-        print(f"⚠️  Could not connect to TR-8S: {e}")
+    # Initialize MIDI engine (connects to first available device)
+    available_devices = MIDIEngine.list_devices()
+    if available_devices:
+        print(f"🎹 Available MIDI devices: {', '.join(available_devices)}")
+        try:
+            engine = MIDIEngine()  # Auto-connects to first available
+            engine.on_step = on_step
+            print(f"✅ Connected to MIDI: {engine.port_name}")
+        except Exception as e:
+            print(f"⚠️  Could not connect to MIDI: {e}")
+            print("   Running in demo mode (no MIDI output)")
+            engine = None
+    else:
+        print("⚠️  No MIDI devices found")
         print("   Running in demo mode (no MIDI output)")
         engine = None
 
@@ -140,12 +151,18 @@ async def websocket_endpoint(ws: WebSocket):
         "bpm": engine.bpm if engine else 120,
         "swing": engine.swing if engine else 0,
         "sessions": list(sessions.values()),
+        "midi_devices": MIDIEngine.list_devices(),
+        "midi_device": engine.port_name if engine else None,
     }
     if active_session_id and active_session_id in sessions:
         session = sessions[active_session_id]
         state["session"] = session
-        if session["patterns"]:
-            state["pattern"] = session["patterns"][session["current_version"]]
+        if session["patterns"] and session["current_version"] >= 0:
+            pattern = session["patterns"][session["current_version"]]
+            state["pattern"] = pattern
+            # Ensure engine has the pattern loaded
+            if engine and not engine.pattern:
+                engine.set_pattern(pattern)
     await ws.send_json(state)
 
     try:
@@ -181,9 +198,19 @@ async def list_sessions():
 
 @app.get("/api/sessions/{session_id}")
 async def get_session(session_id: str):
+    global active_session_id
     if session_id not in sessions:
         return {"error": "Session not found"}
-    return sessions[session_id]
+
+    # Load the session's current pattern into the engine
+    session = sessions[session_id]
+    active_session_id = session_id
+    if engine and session["patterns"] and session["current_version"] >= 0:
+        pattern = session["patterns"][session["current_version"]]
+        engine.set_pattern(pattern)
+        print(f"📂 Loaded pattern from session {session_id}")
+
+    return session
 
 
 @app.delete("/api/sessions/{session_id}")
@@ -278,8 +305,10 @@ async def send_message(session_id: str, req: MessageRequest):
 # --- Playback Controls ---
 @app.post("/api/play")
 async def play():
+    print(f"▶️  Play requested - engine={engine is not None}, pattern={engine.pattern is not None if engine else 'N/A'}, port={engine.port_name if engine else 'N/A'}")
     if engine and engine.pattern:
         engine.play()
+        print(f"▶️  Play started - playing={engine.playing}")
         await broadcast({"type": "playback", "playing": True})
         return {"playing": True}
     return {"error": "No pattern loaded"}
@@ -332,6 +361,62 @@ async def update_params(req: ParamsUpdate):
         })
         return {"bpm": engine.bpm, "swing": engine.swing}
     return {"error": "No MIDI engine"}
+
+
+# --- MIDI Device Management ---
+@app.get("/api/midi/devices")
+async def list_midi_devices():
+    """List all available MIDI output devices."""
+    devices = MIDIEngine.list_devices()
+    return {
+        "devices": devices,
+        "current": engine.port_name if engine else None,
+    }
+
+
+@app.post("/api/midi/select")
+async def select_midi_device(req: MidiDeviceSelect):
+    """Switch to a different MIDI device."""
+    global engine
+
+    available = MIDIEngine.list_devices()
+    if req.device not in available:
+        return {"error": f"Device not found: {req.device}"}
+
+    if engine:
+        # Switch existing engine to new device
+        try:
+            engine.switch_device(req.device)
+        except Exception as e:
+            return {"error": str(e)}
+    else:
+        # No engine yet, create one
+        try:
+            engine = MIDIEngine(req.device)
+            engine.on_step = on_step
+        except Exception as e:
+            return {"error": f"Could not connect: {e}"}
+
+    # Broadcast device change to all clients
+    await broadcast({
+        "type": "midi_device",
+        "device": engine.port_name,
+        "devices": available,
+    })
+
+    return {"device": engine.port_name, "ok": True}
+
+
+@app.post("/api/midi/refresh")
+async def refresh_midi_devices():
+    """Refresh the list of available MIDI devices."""
+    devices = MIDIEngine.list_devices()
+    await broadcast({
+        "type": "midi_devices",
+        "devices": devices,
+        "current": engine.port_name if engine else None,
+    })
+    return {"devices": devices, "current": engine.port_name if engine else None}
 
 
 # --- Static Files & Index ---
