@@ -21,9 +21,17 @@ You are a BAND MEMBER. The user describes what they want to hear, and you create
 - RC (Ride Cymbal): MIDI note 51
 
 ## Pattern Format
-- 16 steps per bar (16th notes at the given BPM)
+- 64 steps total = 4 bars of 16 steps each (16th notes at the given BPM)
+- Steps 1-16: Bar 1 | Steps 17-32: Bar 2 | Steps 33-48: Bar 3 | Steps 49-64: Bar 4
 - Each step is a velocity value: 0 = off, 1-127 = on at that velocity
 - Common velocities: 127 = hard accent, 100 = normal, 70 = medium, 45 = ghost note
+
+## 4-Bar Structure Tips
+- Keep bars 1-3 consistent for the main groove
+- Use bar 4 for fills, variations, or turnarounds
+- Vary hi-hat patterns or accents slightly between bars for a human feel
+- Add crash cymbal on step 1 (downbeat of bar 1) for phrasing
+- Build tension through the 4 bars, resolve on bar 1 of the next cycle
 
 ## Response Format
 ALWAYS respond with TWO parts:
@@ -36,8 +44,8 @@ ALWAYS respond with TWO parts:
   "swing": 0,
   "kit_suggestion": "909",
   "instruments": {
-    "BD": {"steps": [127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0]},
-    "SD": {"steps": [0,0,0,0,127,0,0,0,0,0,0,0,127,0,0,0]}
+    "BD": {"steps": [127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0]},
+    "SD": {"steps": [0,0,0,0,127,0,0,0,0,0,0,0,127,0,0,0,0,0,0,0,127,0,0,0,0,0,0,0,127,0,0,0,0,0,0,0,127,0,0,0,0,0,0,0,127,0,0,0,0,0,0,0,127,0,0,0,0,0,0,0,127,0,0,0]}
   }
 }
 ```
@@ -87,7 +95,7 @@ class PatternGenerator:
         """
         response = self.client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=2000,
+            max_tokens=8192,  # 64-step patterns need more tokens
             system=SYSTEM_PROMPT,
             messages=conversation,
         )
@@ -135,13 +143,13 @@ class PatternGenerator:
         if "instruments" not in pattern:
             pattern["instruments"] = {}
 
-        # Ensure all step arrays are length 16
+        # Ensure all step arrays are length 64 (4 bars)
         for inst_name, inst_data in pattern["instruments"].items():
             steps = inst_data.get("steps", [])
-            if len(steps) < 16:
-                steps.extend([0] * (16 - len(steps)))
-            elif len(steps) > 16:
-                steps = steps[:16]
+            if len(steps) < 64:
+                steps.extend([0] * (64 - len(steps)))
+            elif len(steps) > 64:
+                steps = steps[:64]
             # Clamp velocities
             inst_data["steps"] = [max(0, min(127, int(v))) for v in steps]
 

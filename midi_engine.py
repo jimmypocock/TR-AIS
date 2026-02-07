@@ -1,7 +1,7 @@
 import mido
 import time
 import threading
-from typing import Optional, Callable
+from typing import Optional, Callable, List
 
 # TR-8S default MIDI note assignments
 NOTE_MAP = {
@@ -22,8 +22,9 @@ MIDI_CHANNEL = 9  # Channel 10 in 1-indexed (standard drum channel)
 
 
 class MIDIEngine:
-    def __init__(self, port_name: str = "TR-8S"):
-        self.port = mido.open_output(port_name)
+    def __init__(self, port_name: Optional[str] = None):
+        self.port_name: Optional[str] = None
+        self.port = None
         self.pattern: Optional[dict] = None
         self.bpm: float = 120.0
         self.swing: float = 0.0  # 0-100
@@ -33,6 +34,58 @@ class MIDIEngine:
         self._lock = threading.Lock()
         self.on_step: Optional[Callable[[int], None]] = None
 
+        # Connect to specified port or first available
+        if port_name:
+            self._open_port(port_name)
+        else:
+            available = self.list_devices()
+            if available:
+                self._open_port(available[0])
+
+    @staticmethod
+    def list_devices() -> List[str]:
+        """List all available MIDI output devices."""
+        return mido.get_output_names()
+
+    def _open_port(self, port_name: str):
+        """Open a MIDI port by name."""
+        self.port = mido.open_output(port_name)
+        self.port_name = port_name
+
+    def switch_device(self, port_name: str) -> bool:
+        """
+        Switch to a different MIDI device.
+        Cleanly stops playback, closes old port, opens new one, and restores state.
+        Returns True on success, False on failure.
+        """
+        was_playing = self.playing
+        current_pattern = self.pattern
+
+        # Stop playback and close current port
+        self.stop()
+        if self.port:
+            try:
+                self.port.close()
+            except Exception:
+                pass
+            self.port = None
+            self.port_name = None
+
+        # Open new port
+        try:
+            self._open_port(port_name)
+        except Exception as e:
+            # Try to reconnect to old device if switch failed
+            raise RuntimeError(f"Could not connect to {port_name}: {e}")
+
+        # Restore pattern and playback state
+        if current_pattern:
+            self.set_pattern(current_pattern)
+            if was_playing:
+                self.play()
+
+        return True
+
     def set_pattern(self, pattern: dict):
         """Update the current pattern. Thread-safe."""
         with self._lock:
@@ -41,6 +94,7 @@ class MIDIEngine:
                 self.bpm = float(pattern["bpm"])
             if "swing" in pattern:
                 self.swing = float(pattern["swing"])
+        print(f"🎵 Pattern set - BPM={self.bpm}, swing={self.swing}, instruments={list(pattern.get('instruments', {}).keys())}")
 
     def set_bpm(self, bpm: float):
         with self._lock:
@@ -52,12 +106,14 @@ class MIDIEngine:
 
     def play(self):
         """Start the sequencer loop."""
+        print(f"🎵 MIDIEngine.play() called - already playing={self.playing}, port={self.port_name}")
         if self.playing:
             return
         self.playing = True
         self.current_step = 0
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
+        print(f"🎵 Sequencer thread started")
 
     def stop(self):
         """Stop the sequencer and send all notes off."""
@@ -67,11 +123,13 @@ class MIDIEngine:
             self._thread = None
         self.current_step = 0
         # All notes off
-        for note in NOTE_MAP.values():
-            self.port.send(mido.Message("note_off", note=note, channel=MIDI_CHANNEL))
+        if self.port:
+            for note in NOTE_MAP.values():
+                self.port.send(mido.Message("note_off", note=note, channel=MIDI_CHANNEL))
 
     def _loop(self):
         """Main sequencer loop — runs in a separate thread."""
+        print(f"🔄 Loop started - port={self.port_name}, port_open={self.port is not None}")
         next_time = time.perf_counter()
 
         while self.playing:
@@ -92,22 +150,23 @@ class MIDIEngine:
                     pass
 
             # Send MIDI notes for this step
-            instruments = pattern.get("instruments", {})
-            for inst_name, inst_data in instruments.items():
-                if inst_name not in NOTE_MAP:
-                    continue
-                steps = inst_data.get("steps", [])
-                if self.current_step < len(steps):
-                    velocity = int(steps[self.current_step])
-                    if velocity > 0:
-                        self.port.send(
-                            mido.Message(
-                                "note_on",
-                                note=NOTE_MAP[inst_name],
-                                velocity=min(127, max(1, velocity)),
-                                channel=MIDI_CHANNEL,
+            if self.port:
+                instruments = pattern.get("instruments", {})
+                for inst_name, inst_data in instruments.items():
+                    if inst_name not in NOTE_MAP:
+                        continue
+                    steps = inst_data.get("steps", [])
+                    if self.current_step < len(steps):
+                        velocity = int(steps[self.current_step])
+                        if velocity > 0:
+                            self.port.send(
+                                mido.Message(
+                                    "note_on",
+                                    note=NOTE_MAP[inst_name],
+                                    velocity=min(127, max(1, velocity)),
+                                    channel=MIDI_CHANNEL,
+                                )
                             )
-                        )
 
             # Calculate timing with swing
             step_duration = 60.0 / bpm / 4.0  # Duration of one 16th note
@@ -124,7 +183,13 @@ class MIDIEngine:
                 actual_duration = step_duration * (1.0 - swing_amount)
 
             next_time += actual_duration
-            self.current_step = (self.current_step + 1) % 16
+            # Get step count from pattern (default 16 for backwards compatibility)
+            step_count = 16
+            instruments = pattern.get("instruments", {})
+            if instruments:
+                first_inst = next(iter(instruments.values()), {})
+                step_count = len(first_inst.get("steps", [])) or 16
+            self.current_step = (self.current_step + 1) % step_count
 
             # High-precision busy wait
             while time.perf_counter() < next_time:
@@ -134,7 +199,7 @@ class MIDIEngine:
 
     def send_test_note(self, instrument: str = "BD", velocity: int = 127):
         """Send a single test note."""
-        if instrument in NOTE_MAP:
+        if self.port and instrument in NOTE_MAP:
             self.port.send(
                 mido.Message(
                     "note_on",
@@ -146,4 +211,7 @@ class MIDIEngine:
 
     def close(self):
         self.stop()
-        self.port.close()
+        if self.port:
+            self.port.close()
+            self.port = None
+            self.port_name = None

@@ -80,6 +80,24 @@
       min-width: 0;
     }
 
+    .midi-select {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      max-width: 140px;
+    }
+
+    .midi-select.connected {
+      border-color: var(--green);
+    }
+
+    .midi-select.disconnected {
+      border-color: #f44336;
+    }
+
     .btn-icon {
       background: var(--surface2);
       border: 1px solid var(--border);
@@ -254,7 +272,7 @@
 
     .grid-table {
       width: 100%;
-      min-width: 360px;
+      min-width: 720px;
     }
 
     .grid-row {
@@ -283,11 +301,11 @@
     .grid-step {
       flex: 1;
       aspect-ratio: 1;
-      max-height: 20px;
-      border-radius: 3px;
+      max-height: 18px;
+      border-radius: 2px;
       background: var(--step-off);
       transition: background 0.05s;
-      min-width: 12px;
+      min-width: 8px;
     }
 
     .grid-step.on {
@@ -305,6 +323,29 @@
 
     .grid-step.beat-marker {
       border-top: 2px solid #444;
+    }
+
+    .grid-step.bar-start {
+      margin-left: 4px;
+    }
+
+    .grid-step.bar-start:first-child {
+      margin-left: 0;
+    }
+
+    /* Bar number indicators */
+    .grid-bar-labels {
+      display: flex;
+      padding-left: 32px;
+      margin-bottom: 4px;
+      gap: 2px;
+    }
+
+    .bar-label {
+      flex: 1;
+      font-size: 10px;
+      color: var(--text-dim);
+      text-align: center;
     }
 
     /* --- Controls --- */
@@ -488,11 +529,15 @@
 
   <!-- Header -->
   <div class="header">
-    <div class="logo">🥁 TR-AIS <span>Roland TR-8S</span></div>
+    <div class="logo">🥁 TR-AIS</div>
     <select class="session-select" id="sessionSelect" onchange="switchSession(this.value)">
       <option value="">Select session...</option>
     </select>
     <button class="btn-icon" onclick="createSession()" title="New Session">+</button>
+    <select class="midi-select" id="midiSelect" onchange="switchMidiDevice(this.value)" title="MIDI Output Device">
+      <option value="">No MIDI</option>
+    </select>
+    <button class="btn-icon" onclick="refreshMidiDevices()" title="Refresh MIDI Devices">↻</button>
     <div class="status">
       <div class="status-dot" id="statusDot"></div>
       <span id="statusText">Connecting</span>
@@ -564,6 +609,8 @@
     let currentPattern = null;
     let sending = false;
     let reconnectTimer = null;
+    let midiDevices = [];
+    let currentMidiDevice = null;
 
     // --- WebSocket ---
     function connect() {
@@ -603,6 +650,8 @@
           if (data.active_session) {
             document.getElementById('sessionSelect').value = data.active_session;
           }
+          if (data.midi_devices) { midiDevices = data.midi_devices; renderMidiDeviceList(); }
+          if (data.midi_device !== undefined) { currentMidiDevice = data.midi_device; updateMidiDeviceSelect(); }
           break;
 
         case 'step':
@@ -663,6 +712,19 @@
             document.getElementById('gridPanel').classList.remove('show');
             renderChat();
           }
+          break;
+
+        case 'midi_device':
+          currentMidiDevice = data.device;
+          if (data.devices) { midiDevices = data.devices; renderMidiDeviceList(); }
+          updateMidiDeviceSelect();
+          break;
+
+        case 'midi_devices':
+          midiDevices = data.devices;
+          currentMidiDevice = data.current;
+          renderMidiDeviceList();
+          updateMidiDeviceSelect();
           break;
       }
     }
@@ -869,7 +931,28 @@
       // Only show instruments that are in the pattern
       const activeInsts = INST_ORDER.filter(i => insts[i]);
 
+      // Determine step count from pattern (default 64)
+      let stepCount = 64;
+      if (activeInsts.length > 0) {
+        stepCount = insts[activeInsts[0]].steps?.length || 64;
+      }
+      const barCount = Math.ceil(stepCount / 16);
+
       table.innerHTML = '';
+
+      // Add bar labels
+      if (barCount > 1) {
+        const barLabels = document.createElement('div');
+        barLabels.className = 'grid-bar-labels';
+        for (let b = 0; b < barCount; b++) {
+          const label = document.createElement('div');
+          label.className = 'bar-label';
+          label.textContent = `Bar ${b + 1}`;
+          barLabels.appendChild(label);
+        }
+        table.appendChild(barLabels);
+      }
+
       activeInsts.forEach(inst => {
         const row = document.createElement('div');
         row.className = 'grid-row';
@@ -883,7 +966,7 @@
         steps.className = 'grid-steps';
         const stepData = insts[inst].steps || [];
 
-        for (let i = 0; i < 16; i++) {
+        for (let i = 0; i < stepCount; i++) {
           const step = document.createElement('div');
           step.className = 'grid-step';
           step.dataset.inst = inst;
@@ -892,6 +975,7 @@
           if (vel > 80) step.classList.add('on');
           else if (vel > 0) step.classList.add('ghost');
           if (i % 4 === 0) step.classList.add('beat-marker');
+          if (i % 16 === 0 && i > 0) step.classList.add('bar-start');
           if (i === currentStep) step.classList.add('cursor');
           steps.appendChild(step);
         }
@@ -967,6 +1051,65 @@
       const total = parseInt(nav.dataset.total || 0);
       if (v < total - 1 && currentSession) {
         fetch(`/api/sessions/${currentSession.id}/version/${v + 1}`, { method: 'POST' });
+      }
+    }
+
+    // --- MIDI Device Management ---
+    function renderMidiDeviceList() {
+      const sel = document.getElementById('midiSelect');
+      const val = sel.value;
+      sel.innerHTML = '<option value="">No MIDI</option>';
+      midiDevices.forEach(d => {
+        const opt = document.createElement('option');
+        opt.value = d;
+        opt.textContent = d;
+        sel.appendChild(opt);
+      });
+      sel.value = currentMidiDevice || val;
+    }
+
+    function updateMidiDeviceSelect() {
+      const sel = document.getElementById('midiSelect');
+      sel.value = currentMidiDevice || '';
+      sel.classList.remove('connected', 'disconnected');
+      if (currentMidiDevice) {
+        sel.classList.add('connected');
+      } else if (midiDevices.length > 0) {
+        sel.classList.add('disconnected');
+      }
+    }
+
+    async function switchMidiDevice(device) {
+      if (!device) return;
+      try {
+        const res = await fetch('/api/midi/select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ device })
+        });
+        const data = await res.json();
+        if (data.error) {
+          alert(`MIDI Error: ${data.error}`);
+          updateMidiDeviceSelect(); // Reset to current
+        }
+      } catch (err) {
+        alert(`MIDI Error: ${err.message}`);
+        updateMidiDeviceSelect();
+      }
+    }
+
+    async function refreshMidiDevices() {
+      try {
+        const res = await fetch('/api/midi/refresh', { method: 'POST' });
+        const data = await res.json();
+        if (data.devices) {
+          midiDevices = data.devices;
+          currentMidiDevice = data.current;
+          renderMidiDeviceList();
+          updateMidiDeviceSelect();
+        }
+      } catch (err) {
+        console.error('Failed to refresh MIDI devices:', err);
       }
     }
 
