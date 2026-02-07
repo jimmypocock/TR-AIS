@@ -1,64 +1,226 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code when working with this repository.
 
 ## Project Overview
 
-TR-AIS is a web application that uses Claude AI to generate drum patterns for the Roland TR-8S drum machine. Users describe beats in natural language, and the AI programs them in real-time via MIDI.
+**Ableton AI Assistant** - An AI-powered production assistant that controls Ableton Live through natural language. The system understands your session, plugins, and arrangement to execute complex musical intent.
+
+### Vision
+- "I want a drum beat in 80s ballad style" → Selects instrument, creates pattern, adjusts parameters
+- "More reverb on Track 3 when the swell hits" → Understands arrangement, creates automation
+- "Make the bass more aggressive" → Knows track, plugin, and which parameters control "aggression"
+
+### Architecture Overview
+
+```
+┌──────────────────┐     ┌─────────────────┐     ┌──────────────────┐
+│   Frontend (Web) │────▶│ Python Backend  │────▶│   Ableton Live   │
+│   Chat + State   │◀────│ FastAPI + Claude│◀────│   via AbletonOSC │
+└──────────────────┘     └─────────────────┘     └──────────────────┘
+```
+
+## Directory Structure
+
+```
+.
+├── backend/                 # Core AI + Ableton integration
+│   ├── __init__.py
+│   ├── ableton_engine.py   # OSC client for Ableton control
+│   ├── config.py           # Environment configuration
+│   ├── claude_engine.py    # Claude API integration (TODO)
+│   ├── session_cache.py    # Session state management (TODO)
+│   └── main.py             # FastAPI server (TODO)
+│
+├── beat-machine/           # TR-AIS drum pattern generator (legacy module)
+│   ├── main.py             # Original TR-AIS server
+│   ├── midi_engine.py      # MIDI sequencer for TR-8S
+│   ├── pattern_generator.py # Claude drum pattern generation
+│   ├── static/index.html   # Original web UI
+│   └── requirements.txt    # Beat machine dependencies
+│
+├── plugins/                # Plugin parameter profiles
+│   ├── ableton/           # Ableton native devices
+│   └── third_party/       # Third-party VST profiles
+│
+├── tests/                  # Test suite
+│   ├── unit/              # Tests without Ableton
+│   ├── integration/       # Tests requiring Ableton
+│   ├── mocks/             # Mock implementations
+│   └── conftest.py        # Pytest fixtures
+│
+├── docs/                   # Documentation
+│   ├── ABLETON-AI-ARCHITECTURE.md
+│   └── ...
+│
+└── requirements.txt        # Project dependencies
+```
+
+## Setup
+
+```bash
+# Install uv (if not already installed)
+brew install uv
+
+# Create virtual environment and install dependencies
+uv venv .venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
+```
 
 ## Commands
 
 ```bash
-# Install dependencies
-pip3 install -r requirements.txt
+# Activate environment (do this first)
+source .venv/bin/activate
 
-# Run the server (development)
-python3 main.py
+# Run tests (unit only - no Ableton needed)
+pytest tests/unit/ -v
 
-# Server runs at http://localhost:8000
+# Run integration tests (requires Ableton + AbletonOSC)
+pytest tests/integration/ -v
+
+# Run the backend server (when implemented)
+python3 -m backend.main
+
+# Run legacy beat-machine
+cd beat-machine && python3 main.py
 ```
 
-## Architecture
+## Key Components
 
-**Backend (Python/FastAPI):**
-- `main.py` - FastAPI server with WebSocket support for real-time communication
-- `midi_engine.py` - Real-time 16-step MIDI sequencer with swing support
-- `pattern_generator.py` - Claude API integration for pattern generation
+### Backend (`backend/`)
 
-**Frontend:**
-- `static/index.html` - Single-page app with WebSocket client, pattern grid visualization, and chat UI
+**ableton_engine.py** - OSC client for Ableton Live
+- Communicates via AbletonOSC (port 11000/11001)
+- Query: `get_tempo()`, `get_tracks()`, `get_session_info()`
+- Execute: `set_tempo()`, `create_midi_track()`, `set_device_parameter()`
+- Bidirectional: receives state updates from Ableton
 
-**Data flow:**
-1. User sends natural language request via WebSocket
-2. `PatternGenerator` calls Claude API with conversation history
-3. Claude returns pattern as JSON (BPM, swing, instruments with 16-step velocity arrays)
-4. `MIDIEngine` plays pattern via MIDI to TR-8S hardware
-5. Frontend visualizes pattern and playhead position
+**config.py** - Configuration management
+- Loads from environment variables
+- Ableton connection settings
+- Claude API settings
+- Plugin directory paths
 
-## Key Technical Details
+### Beat Machine (`beat-machine/`)
 
-**MIDI:**
-- Uses MIDI channel 10 (standard drums)
-- 11 instruments: BD, SD, LT, MT, HT, RS, CP, CH, OH, CC, RC
-- Note mapping in `NOTE_MAP` dict (e.g., BD=36, SD=38)
-- High-precision timing with `perf_counter()` busy-wait loop
+The original TR-AIS implementation, now a module within the larger system.
+- Generates drum patterns via Claude
+- Outputs MIDI to Roland TR-8S hardware
+- Has its own personality/preference learning system
 
-**Pattern format:**
+### Plugin Profiles (`plugins/`)
+
+JSON files mapping plugin parameters to semantic names:
 ```json
 {
-  "bpm": 120,
-  "swing": 0,
-  "instruments": {
-    "BD": {"steps": [127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0]},
-    "SD": {"steps": [0,0,0,0,127,0,0,0,0,0,0,0,127,0,0,0]}
+  "name": "Wavetable",
+  "parameters": {
+    "0": {"name": "Osc 1 Position", "semantic": ["wavetable_position", "timbre"]},
+    "12": {"name": "Filter Freq", "semantic": ["filter_cutoff", "brightness"]}
+  },
+  "semantic_mappings": {
+    "warmer": {"Filter Freq": -0.2},
+    "brighter": {"Filter Freq": +0.3}
   }
 }
 ```
 
-**Velocities:** 0=off, 40-60=ghost note, 100=normal, 127=accent
+## Development Process
 
-**Swing:** 0=straight, 20=subtle, 40=moderate, 60=heavy (applied as timing shift on off-beats)
+### Build-Validate Cycle
 
-## Environment
+Each feature follows:
+1. **Build** - Implement the feature
+2. **Unit Test** - Tests that run without Ableton
+3. **Integration Test** - Tests with Ableton running
+4. **Validation** - Demo it works before moving on
 
-Requires `ANTHROPIC_API_KEY` in `.env` file. See `.env.example`.
+### Current Phase: Foundation
+
+- [x] Project structure setup
+- [x] ableton_engine.py OSC client
+- [x] Test framework setup
+- [ ] Verify AbletonOSC connection
+- [ ] Session state caching
+- [ ] Claude integration
+- [ ] Basic web UI
+
+## Dependencies
+
+### Required for Backend
+- `fastapi` - HTTP/WebSocket server
+- `python-osc` - OSC communication with Ableton
+- `anthropic` - Claude API
+- `python-dotenv` - Environment configuration
+
+### Required in Ableton
+- **AbletonOSC** - M4L device exposing Live Object Model
+  - Install from: https://github.com/ideoforms/AbletonOSC
+  - Requires Ableton Live 11+ (works with Live 12)
+  - Listens on port 11000, responds on 11001
+
+## Environment Variables
+
+```bash
+# Required
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Optional (with defaults)
+ABLETON_HOST=127.0.0.1
+ABLETON_SEND_PORT=11000
+ABLETON_RECEIVE_PORT=11001
+SERVER_PORT=8000
+CLAUDE_MODEL=claude-sonnet-4-20250514
+```
+
+## Testing
+
+```bash
+# Run all unit tests
+pytest tests/unit/ -v
+
+# Run specific test file
+pytest tests/unit/test_ableton_engine.py -v
+
+# Run with coverage
+pytest tests/unit/ --cov=backend
+
+# Run integration tests (Ableton must be running)
+pytest tests/integration/ -v --ableton
+```
+
+## Key Technical Details
+
+### OSC Protocol
+- AbletonOSC exposes Live Object Model via OSC
+- Paths follow LOM structure: `/live_set/tracks/0/devices/1/parameters/3`
+- Message types: `get` (query), `set` (modify), `call` (execute function)
+
+### Session State
+The backend maintains a mirror of Ableton's state:
+- Tracks (name, type, armed, devices)
+- Devices (name, parameters)
+- Transport (tempo, playing, recording)
+- Arrangement (markers, sections)
+
+This cache is:
+- Built on connect by querying Ableton
+- Updated in real-time via OSC subscriptions
+- Injected into Claude's context for every request
+
+### Plugin Parameter Access
+Every device parameter accessible via:
+```
+/live_set/tracks/{N}/devices/{N}/parameters/{N}/get/value
+/live_set/tracks/{N}/devices/{N}/parameters/{N}/set/value
+```
+
+Query parameter info: `get/name`, `get/min`, `get/max`
+
+## Links
+
+- [AbletonOSC](https://github.com/ideoforms/AbletonOSC) - OSC bridge for Ableton
+- [pylive](https://github.com/ideoforms/pylive) - Python wrapper (optional)
+- [Live Object Model](https://docs.cycling74.com/userguide/m4l/live_api_overview/) - Ableton API docs
