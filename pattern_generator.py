@@ -1,11 +1,22 @@
+"""
+Pattern Generator with Personality Integration
+
+This version injects the artist's personality context into every Claude request,
+making the AI respond as if it knows the artist's style, preferences, and history.
+"""
+
 import json
 import re
 import os
 from anthropic import Anthropic
+from typing import TYPE_CHECKING
 
-SYSTEM_PROMPT = """You are a drum pattern programmer and creative collaborator for a Roland TR-8S drum machine. You're a skilled session drummer and producer who understands groove, genre conventions, and what makes a beat feel good.
+if TYPE_CHECKING:
+    from personality_engine import PersonalityEngine
 
-You are a BAND MEMBER. The user describes what they want to hear, and you create or refine drum patterns. Each message builds on what came before — you're working TOGETHER toward the perfect groove. When they say "make it busier" you know exactly what's playing and make targeted changes. When they say "strip it back" you pull things out thoughtfully.
+BASE_SYSTEM_PROMPT = """You are a drum pattern programmer and creative collaborator for a Roland TR-8S drum machine. You're a skilled session drummer and producer who understands groove, genre conventions, and what makes a beat feel good.
+
+You are a BAND MEMBER who has been working with this artist. You know their style, their preferences, and what they mean when they use certain words. When they say "make it groovier" you know exactly what THEY mean by that. Each message builds on what came before — you're working TOGETHER toward the perfect groove.
 
 ## Available Instruments
 - BD (Bass Drum): MIDI note 36
@@ -21,17 +32,9 @@ You are a BAND MEMBER. The user describes what they want to hear, and you create
 - RC (Ride Cymbal): MIDI note 51
 
 ## Pattern Format
-- 64 steps total = 4 bars of 16 steps each (16th notes at the given BPM)
-- Steps 1-16: Bar 1 | Steps 17-32: Bar 2 | Steps 33-48: Bar 3 | Steps 49-64: Bar 4
+- 16 steps per bar (16th notes at the given BPM)
 - Each step is a velocity value: 0 = off, 1-127 = on at that velocity
 - Common velocities: 127 = hard accent, 100 = normal, 70 = medium, 45 = ghost note
-
-## 4-Bar Structure Tips
-- Keep bars 1-3 consistent for the main groove
-- Use bar 4 for fills, variations, or turnarounds
-- Vary hi-hat patterns or accents slightly between bars for a human feel
-- Add crash cymbal on step 1 (downbeat of bar 1) for phrasing
-- Build tension through the 4 bars, resolve on bar 1 of the next cycle
 
 ## Response Format
 ALWAYS respond with TWO parts:
@@ -44,8 +47,8 @@ ALWAYS respond with TWO parts:
   "swing": 0,
   "kit_suggestion": "909",
   "instruments": {
-    "BD": {"steps": [127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0]},
-    "SD": {"steps": [0,0,0,0,127,0,0,0,0,0,0,0,127,0,0,0,0,0,0,0,127,0,0,0,0,0,0,0,127,0,0,0,0,0,0,0,127,0,0,0,0,0,0,0,127,0,0,0,0,0,0,0,127,0,0,0,0,0,0,0,127,0,0,0]}
+    "BD": {"steps": [127,0,0,0,127,0,0,0,127,0,0,0,127,0,0,0]},
+    "SD": {"steps": [0,0,0,0,127,0,0,0,0,0,0,0,127,0,0,0]}
   }
 }
 ```
@@ -55,48 +58,49 @@ ALWAYS respond with TWO parts:
 - When modifying a pattern, change ONLY what the user asked for. Preserve everything else EXACTLY.
 - Ghost notes (velocity 40-60) add subtle groove and texture
 - Accents (velocity 127) create emphasis and dynamics
-- Swing: 0 = dead straight, 20 = subtle feel, 40 = moderate groove, 60 = heavy shuffle, 80 = extreme
+- Swing: 0 = dead straight, 20 = subtle feel, 40 = moderate groove, 60 = heavy shuffle
 - Less is often more. A simple pattern with great feel beats a busy mess.
-- Think about what a real drummer would actually play in that genre and context
+- PAY ATTENTION to the artist's learned preferences below — avoid things they dislike, lean into things they love
 
 ## Genre Reference
-- 80s Power Ballad: Gated snare (big hits on 2&4), steady 8th hats, simple kick, 65-85 BPM, crash on bar 1
+- 80s Power Ballad: Gated snare (big hits on 2&4), steady 8th hats, simple kick, 65-85 BPM
 - 80s Pop: LinnDrum/808 feel, claps layered with snare, driving 8th hats, 100-120 BPM
-- Trip Hop: Slow (70-95 BPM), heavy swing (50-70), sparse kicks, ghost notes everywhere, breakbeat-influenced, half-time feel
-- Blues Shuffle: Swing 50-70, ride cymbal or cross-stick, kick on 1 and 3, snare on 2 and 4, 100-130 BPM
-- Blues Rock: Driving feel, open hats mixed with closed, strong backbeat, 120-140 BPM
+- Trip Hop: Slow (70-95 BPM), heavy swing (50-70), sparse kicks, ghost notes, breakbeat-influenced
+- Blues Shuffle: Swing 50-70, ride or cross-stick, kick on 1&3, snare on 2&4, 100-130 BPM
 - Pop: Clean backbeat, kick/snare locked, tasteful 8th or 16th hats, 100-128 BPM
-- Rock: 8th note hats or ride, strong backbeat, kick follows energy, 110-140 BPM
-- Funk: 16th note hats with accents, ghost snares, syncopated kick, moderate swing, 95-115 BPM
-- Bossa Nova: Cross-stick pattern, syncopated kick (bass drum plays the surdo part), rim or ride, 120-145 BPM
-- Hip Hop: Boom bap feel, punchy kick, crispy snare/clap, swing feel, 80-100 BPM
-- Lo-fi: Similar to hip hop but more relaxed, swing 40-60, ghost notes, dusty feel, 70-90 BPM
-- Techno: Four on the floor kick, 16th hats, open hat on off-beats, 120-140 BPM, straight timing
-- House: Four on the floor, claps on 2&4, open hats on upbeats, 120-130 BPM
+- Funk: 16th note hats with accents, ghost snares, syncopated kick, 95-115 BPM
+- Lo-fi: Relaxed, swing 40-60, ghost notes, dusty feel, 70-90 BPM
+- Techno: Four on the floor kick, 16th hats, open hat on off-beats, 120-140 BPM
 
-## Kit Suggestions
-Use: "808", "909", "707", "606", "CR78", or "default"
-This is just a display recommendation — the user controls the actual kit on the hardware.
-
-Keep it musical. Keep it fun. You're jamming."""
+Keep it musical. Keep it personal. You know this artist."""
 
 
 class PatternGenerator:
-    def __init__(self):
+    def __init__(self, personality: "PersonalityEngine" = None):
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY not set")
         self.client = Anthropic(api_key=api_key)
+        self.personality = personality
 
-    def generate(self, conversation: list[dict]) -> tuple[str, dict | None]:
+    def generate(self, conversation: list[dict], current_pattern: dict = None) -> tuple[str, dict | None]:
         """
         Generate or refine a pattern based on conversation history.
+        Injects personality context if available.
         Returns (assistant_message, pattern_dict or None)
         """
+        # Build system prompt with personality
+        system_prompt = BASE_SYSTEM_PROMPT
+        
+        if self.personality:
+            personality_context = self.personality.assemble_context(current_pattern)
+            if personality_context:
+                system_prompt += f"\n\n---\n\n# WHAT YOU KNOW ABOUT THIS ARTIST\n\n{personality_context}"
+        
         response = self.client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=8192,  # 64-step patterns need more tokens
-            system=SYSTEM_PROMPT,
+            max_tokens=2000,
+            system=system_prompt,
             messages=conversation,
         )
 
@@ -107,14 +111,12 @@ class PatternGenerator:
 
         # Extract conversational message (everything outside the JSON block)
         message = re.sub(r"```json\s*\{[\s\S]*?\}\s*```", "", full_text).strip()
-        # Clean up any leftover backticks
         message = re.sub(r"```\s*```", "", message).strip()
 
         return message, pattern
 
     def _extract_pattern(self, text: str) -> dict | None:
         """Extract JSON pattern from Claude's response."""
-        # Look for ```json ... ``` blocks
         match = re.search(r"```json\s*(\{[\s\S]*?\})\s*```", text)
         if match:
             try:
@@ -123,7 +125,6 @@ class PatternGenerator:
             except json.JSONDecodeError:
                 pass
 
-        # Fallback: look for raw JSON with instruments key
         match = re.search(r'(\{[\s\S]*"instruments"[\s\S]*\})', text)
         if match:
             try:
@@ -143,14 +144,12 @@ class PatternGenerator:
         if "instruments" not in pattern:
             pattern["instruments"] = {}
 
-        # Ensure all step arrays are length 64 (4 bars)
         for inst_name, inst_data in pattern["instruments"].items():
             steps = inst_data.get("steps", [])
-            if len(steps) < 64:
-                steps.extend([0] * (64 - len(steps)))
-            elif len(steps) > 64:
-                steps = steps[:64]
-            # Clamp velocities
+            if len(steps) < 16:
+                steps.extend([0] * (16 - len(steps)))
+            elif len(steps) > 16:
+                steps = steps[:16]
             inst_data["steps"] = [max(0, min(127, int(v))) for v in steps]
 
         return pattern
