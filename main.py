@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 
 from midi_engine import MIDIEngine
 from pattern_generator import PatternGenerator
+from personality_engine import PersonalityEngine
 
 load_dotenv()
 
@@ -23,11 +24,13 @@ app = FastAPI(title="TR-AIS")
 sessions: dict = {}
 engine: Optional[MIDIEngine] = None
 generator: Optional[PatternGenerator] = None
+personality: Optional[PersonalityEngine] = None
 active_session_id: Optional[str] = None
 connected_websockets: list[WebSocket] = []
 loop: Optional[asyncio.AbstractEventLoop] = None
 
 SESSIONS_FILE = Path("sessions.json")
+PERSONALITY_FILE = Path("personality.json")
 
 
 # --- Persistence ---
@@ -69,6 +72,11 @@ class MidiDeviceSelect(BaseModel):
     device: str
 
 
+class FeedbackRequest(BaseModel):
+    feedback_type: str  # 'accepted', 'rejected', 'loved'
+    comment: Optional[str] = None
+
+
 # --- WebSocket Broadcast ---
 async def broadcast(data: dict):
     dead = []
@@ -93,10 +101,14 @@ def on_step(step: int):
 # --- Lifecycle ---
 @app.on_event("startup")
 async def startup():
-    global engine, generator, loop
+    global engine, generator, personality, loop
     loop = asyncio.get_event_loop()
 
     load_sessions()
+
+    # Load personality
+    personality = PersonalityEngine(str(PERSONALITY_FILE))
+    personality.start_session()  # Track session count
 
     # Initialize MIDI engine (connects to first available device)
     available_devices = MIDIEngine.list_devices()
@@ -115,11 +127,11 @@ async def startup():
         print("   Running in demo mode (no MIDI output)")
         engine = None
 
-    # Init Claude
+    # Init Claude with personality
     if os.getenv("ANTHROPIC_API_KEY"):
         try:
-            generator = PatternGenerator()
-            print("✅ Claude API ready")
+            generator = PatternGenerator(personality=personality)
+            print("✅ Claude API ready (with personality)")
         except Exception as e:
             print(f"⚠️  Claude API error: {e}")
             generator = None
@@ -132,6 +144,8 @@ async def startup():
 async def shutdown():
     if engine:
         engine.close()
+    if personality:
+        personality.save()
     save_sessions()
     print("👋 Shut down cleanly")
 
@@ -240,6 +254,51 @@ async def send_message(session_id: str, req: MessageRequest):
     session = sessions[session_id]
     active_session_id = session_id
 
+    # Get current pattern for context
+    current_pattern = None
+    if session["patterns"] and session["current_version"] >= 0:
+        current_pattern = session["patterns"][session["current_version"]]
+
+    # Check for personality commands first
+    if personality:
+        command_result = personality.handle_command(req.content, current_pattern)
+        if command_result:
+            # Handle recall command (returns dict with pattern)
+            if isinstance(command_result, dict) and "recall" in command_result:
+                memory = command_result["recall"]
+                pattern = memory["pattern"]
+
+                # Add as new version
+                session["patterns"].append(pattern)
+                session["current_version"] = len(session["patterns"]) - 1
+
+                if engine:
+                    engine.set_pattern(pattern)
+                    if not engine.playing:
+                        engine.play()
+
+                save_sessions()
+
+                result = {
+                    "message": f"🎵 Loaded \"{memory['name']}\" from memory",
+                    "pattern": pattern,
+                    "version": session["current_version"],
+                    "total_versions": len(session["patterns"]),
+                    "is_command": True,
+                }
+                await broadcast({
+                    "type": "pattern_update",
+                    "session_id": session_id,
+                    **result,
+                    "playing": engine.playing if engine else False,
+                    "bpm": pattern.get("bpm", 120),
+                    "swing": pattern.get("swing", 0),
+                })
+                return result
+
+            # Handle text response commands
+            return {"message": command_result, "is_command": True}
+
     # Build Claude conversation from history
     claude_messages = []
     for msg in session["conversation"]:
@@ -247,8 +306,7 @@ async def send_message(session_id: str, req: MessageRequest):
 
     # New user message - inject current pattern context if we have one
     user_content = req.content
-    if session["patterns"] and session["current_version"] >= 0:
-        current_pattern = session["patterns"][session["current_version"]]
+    if current_pattern:
         user_content += (
             f"\n\n[CONTEXT — the current playing pattern is:\n"
             f"```json\n{json.dumps(current_pattern, indent=2)}\n```\n"
@@ -262,7 +320,7 @@ async def send_message(session_id: str, req: MessageRequest):
 
     # Generate pattern
     try:
-        message, pattern = generator.generate(claude_messages)
+        message, pattern = generator.generate(claude_messages, current_pattern)
     except Exception as e:
         return {"error": f"Generation failed: {str(e)}"}
 
@@ -363,6 +421,73 @@ async def update_params(req: ParamsUpdate):
     return {"error": "No MIDI engine"}
 
 
+# --- Feedback Endpoint ---
+@app.post("/api/sessions/{session_id}/feedback")
+async def record_feedback(session_id: str, req: FeedbackRequest):
+    """
+    Record artist feedback on the current pattern.
+    This teaches the personality what the artist likes/dislikes.
+
+    feedback_type: 'accepted', 'rejected', 'loved'
+    """
+    if session_id not in sessions:
+        return {"error": "Session not found"}
+
+    session = sessions[session_id]
+
+    if not session["patterns"] or session["current_version"] < 0:
+        return {"error": "No pattern to give feedback on"}
+
+    current_pattern = session["patterns"][session["current_version"]]
+
+    if personality:
+        personality.record_feedback(
+            pattern=current_pattern,
+            feedback_type=req.feedback_type,
+            user_comment=req.comment,
+            session_id=session_id
+        )
+
+    await broadcast({
+        "type": "feedback_recorded",
+        "session_id": session_id,
+        "feedback_type": req.feedback_type,
+    })
+
+    return {"ok": True, "feedback_type": req.feedback_type}
+
+
+# --- Personality Endpoints ---
+@app.get("/api/personality")
+async def get_personality():
+    """Get current personality state."""
+    if personality:
+        return {
+            "profile": personality.data["artist_profile"],
+            "preferences_count": len(personality.data["preferences"]),
+            "memories_count": len(personality.data["memories"]),
+            "stats": personality.data["stats"],
+        }
+    return {"error": "Personality not loaded"}
+
+
+@app.get("/api/personality/context")
+async def get_personality_context():
+    """Get the assembled context string (what Claude sees)."""
+    if personality:
+        return {"context": personality.assemble_context()}
+    return {"error": "Personality not loaded"}
+
+
+@app.post("/api/personality/profile")
+async def update_personality_profile(data: dict):
+    """Update artist profile."""
+    if personality:
+        personality.update_profile(**data)
+        return {"ok": True}
+    return {"error": "Personality not loaded"}
+
+
 # --- MIDI Device Management ---
 @app.get("/api/midi/devices")
 async def list_midi_devices():
@@ -434,6 +559,7 @@ async def index():
 if __name__ == "__main__":
     import uvicorn
     print("\n🥁 TR-AIS — AI Drum Pattern Generator for Roland TR-8S")
+    print("🧠 Personality system enabled")
     print("   Open http://localhost:8000 in your browser")
     print("   Or from your phone: http://<your-mac-ip>:8000\n")
     uvicorn.run(app, host="0.0.0.0", port=8000)
