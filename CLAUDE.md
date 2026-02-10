@@ -26,8 +26,13 @@ This file provides guidance to Claude Code when working with this repository.
 .
 ├── backend/                 # Core AI + Ableton integration
 │   ├── __init__.py
-│   ├── ableton_engine.py   # OSC client for Ableton control
 │   ├── config.py           # Environment configuration
+│   ├── ableton/            # Modular Ableton control package
+│   │   ├── __init__.py     # Exports AbletonClient
+│   │   ├── client.py       # Connection, OSC, state management
+│   │   ├── transport.py    # play, stop, tempo, loop, metronome
+│   │   ├── tracks.py       # create, volume, pan, mute, solo, arm
+│   │   └── devices.py      # parameters, presets, device info
 │   ├── claude_engine.py    # Claude API integration (TODO)
 │   ├── session_cache.py    # Session state management (TODO)
 │   └── main.py             # FastAPI server (TODO)
@@ -91,11 +96,22 @@ cd beat-machine && python3 main.py
 
 ### Backend (`backend/`)
 
-**ableton_engine.py** - OSC client for Ableton Live
-- Communicates via AbletonOSC (port 11000/11001)
-- Query: `get_tempo()`, `get_tracks()`, `get_session_info()`
-- Execute: `set_tempo()`, `create_midi_track()`, `set_device_parameter()`
-- Bidirectional: receives state updates from Ableton
+**ableton/** - Modular OSC client for Ableton Live
+- `client.py` - Connection management, OSC send/receive, session state
+- `transport.py` - play, stop, tempo, loop, metronome, undo/redo
+- `tracks.py` - create, delete, volume, pan, mute, solo, arm, sends
+- `devices.py` - get/set parameters, device info, presets
+
+Usage:
+```python
+from backend.ableton import AbletonClient
+
+client = AbletonClient()
+await client.connect()
+await client.transport.set_tempo(120)
+await client.tracks.create_midi("Drums")
+await client.devices.set_parameter(0, 0, 3, 0.5)
+```
 
 **config.py** - Configuration management
 - Loads from environment variables
@@ -140,9 +156,9 @@ Each feature follows:
 ### Current Phase: Foundation
 
 - [x] Project structure setup
-- [x] ableton_engine.py OSC client
-- [x] Test framework setup
-- [ ] Verify AbletonOSC connection
+- [x] Modular ableton/ package (client, transport, tracks, devices)
+- [x] Test framework setup (14 unit tests)
+- [x] AbletonOSC connection verified (Live 12)
 - [ ] Session state caching
 - [ ] Claude integration
 - [ ] Basic web UI
