@@ -14,12 +14,13 @@ Talk to your DAW like a collaborator:
 
 ## Current Status
 
-**Foundation complete:**
+**Core features working:**
 - [x] Modular Ableton control via OSC (`backend/ableton/`)
 - [x] Transport, tracks, and device parameter control
 - [x] Verified working with Ableton Live 12
-- [ ] Session state caching
-- [ ] Claude AI integration
+- [x] Session state caching (tracks, devices, mixer state)
+- [x] Claude AI integration (natural language → Ableton commands)
+- [x] CLI interface
 - [ ] Web UI
 
 ## Quick Start
@@ -72,6 +73,24 @@ async def test():
 asyncio.run(test())
 "
 ```
+
+### Run the AI Assistant
+
+```bash
+./trais
+```
+
+Or:
+
+```bash
+python3 -m backend.cli
+```
+
+Then try commands like:
+- "create a synth track"
+- "set tempo to 95"
+- "mute the drums"
+- "make track 2 quieter"
 
 ## Project Structure
 
