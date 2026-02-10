@@ -25,7 +25,7 @@ class TestAbletonConfig:
         assert config.host == "127.0.0.1"
         assert config.send_port == 11000
         assert config.receive_port == 11001
-        assert config.timeout == 5.0
+        assert config.timeout == 0.5  # Fast timeout for local OSC
 
     def test_custom_values(self):
         """Test custom configuration values."""

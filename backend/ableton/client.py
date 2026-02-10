@@ -27,7 +27,7 @@ class AbletonConfig:
     host: str = "127.0.0.1"
     send_port: int = 11000  # AbletonOSC listens here
     receive_port: int = 11001  # AbletonOSC sends responses here
-    timeout: float = 5.0  # Seconds to wait for response
+    timeout: float = 0.5  # Seconds to wait for response (local OSC is fast)
 
 
 @dataclass
@@ -138,10 +138,8 @@ class AbletonClient:
             tempo = await self.transport.get_tempo()
             if tempo is not None:
                 self.state.connected = True
-                print(f"Connected to Ableton Live (tempo: {tempo} BPM)")
                 return True
             else:
-                print("Failed to connect - no response from AbletonOSC")
                 return False
 
         except Exception as e:
@@ -153,7 +151,6 @@ class AbletonClient:
         if self._osc_server:
             self._osc_server.shutdown()
         self.state.connected = False
-        print("Disconnected from Ableton Live")
 
     @property
     def is_connected(self) -> bool:
@@ -185,7 +182,7 @@ class AbletonClient:
             raise RuntimeError("Not connected to Ableton")
 
         response_addr = response_address or address
-        timeout = timeout or self.config.timeout
+        timeout = timeout or self.config.timeout or 1.0  # Default 1 sec for local OSC
 
         # Create future for response
         loop = asyncio.get_event_loop()

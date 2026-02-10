@@ -52,21 +52,28 @@ async def main():
         print(f"[ERROR] Connection failed: {e}")
         return
 
-    # Initialize session cache
+    # Get initial tempo
+    tempo = await client.transport.get_tempo()
+    print(f"[OK] Connected (tempo: {tempo} BPM)")
+
+    # Initialize session cache (skip devices for faster startup)
     cache = SessionCache(client)
-    print("[...] Loading session state...")
-    await cache.refresh()
-    state = cache.state
+    print("[...] Loading tracks...")
+    try:
+        await cache.refresh(include_devices=False)
+        state = cache.state
+        print(f"[OK] Loaded {len(state.tracks)} tracks")
 
-    print(f"[OK] Connected to Ableton (tempo: {state.tempo} BPM, {len(state.tracks)} tracks)")
-
-    # Show tracks
-    if state.tracks:
-        print()
-        print("Tracks:")
-        for t in state.tracks:
-            devices_str = f" [{len(t.devices)} devices]" if t.devices else ""
-            print(f"  [{t.index}] {t.name}{devices_str}")
+        # Show tracks
+        if state.tracks:
+            print()
+            print("Tracks:")
+            for t in state.tracks:
+                devices_str = f" [{len(t.devices)} devices]" if t.devices else ""
+                print(f"  [{t.index}] {t.name}{devices_str}")
+    except Exception as e:
+        print(f"[Warning] Could not load full session state: {e}")
+        state = cache.state  # Use whatever we got
 
     print()
 
@@ -125,9 +132,7 @@ async def main():
                     print(f"  [{t.index}] {t.name} (vol:{vol_pct}% pan:{pan_str}){status_str}{devices_str}")
                 continue
 
-            # Get current session state for Claude context
-            # Quick refresh before processing
-            await cache.refresh(include_devices=False)
+            # Use cached session state for Claude context (no refresh - use what we have)
             session_state = cache.state.to_dict()
 
             # Process with Claude

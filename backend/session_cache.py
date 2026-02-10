@@ -117,20 +117,32 @@ class SessionCache:
         Returns:
             Updated SessionState
         """
-        # Transport state
-        self._state.tempo = await self._client.transport.get_tempo() or 120.0
-        self._state.playing = await self._client.transport.is_playing() or False
-        self._state.recording = await self._client.transport.is_recording() or False
-        self._state.metronome = await self._client.transport.get_metronome() or False
+        try:
+            # Transport state
+            self._state.tempo = await self._client.transport.get_tempo() or 120.0
+            self._state.playing = await self._client.transport.is_playing() or False
+            self._state.recording = await self._client.transport.is_recording() or False
+            self._state.metronome = await self._client.transport.get_metronome() or False
 
-        # Tracks
-        self._state.tracks = []
-        track_count = await self._client.tracks.get_count() or 0
+            # Tracks
+            self._state.tracks = []
+            track_count = await self._client.tracks.get_count() or 0
 
-        for i in range(track_count):
-            track = await self._get_track_info(i, include_devices)
-            if track:
-                self._state.tracks.append(track)
+            for i in range(track_count):
+                try:
+                    print(f"  Loading track {i + 1}/{track_count}...", end="\r")
+                    track = await self._get_track_info(i, include_devices)
+                    if track:
+                        self._state.tracks.append(track)
+                except Exception as e:
+                    # Skip problematic tracks but continue
+                    print(f"  [Warning] Could not load track {i}: {e}")
+
+            # Clear the progress line
+            print(" " * 40, end="\r")
+
+        except Exception as e:
+            print(f"  [Warning] Session refresh error: {e}")
 
         return self._state
 

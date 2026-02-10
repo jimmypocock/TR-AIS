@@ -267,20 +267,98 @@ asyncio.run(test())
 
 ---
 
+## Phase 5: Session Cache Optimizations
+
+### Problem
+Current approach queries Ableton for full state on startup. For large sessions (100+ tracks), this is slow. Each OSC query can timeout (0.5s), so 100 tracks × 6 properties = 300 queries = potential 2.5 min worst case.
+
+### Solutions (Priority Order)
+
+#### 1. Local Cache Updates (Easy)
+When WE make a change, update cache locally instead of re-querying Ableton.
+
+```python
+# After muting track 4
+cache.state.tracks[4].muted = True  # Update locally, no OSC needed
+```
+
+- [ ] Executor updates cache after successful commands
+- [ ] Cache has `update_track()` method for local changes
+
+#### 2. Parallel Queries (Medium)
+Use `asyncio.gather()` for independent queries instead of sequential.
+
+```python
+# Current: 6 sequential queries per track
+name = await get_name(i)
+volume = await get_volume(i)
+# ...
+
+# Better: All at once
+name, volume, pan, mute, solo, arm = await asyncio.gather(
+    get_name(i), get_volume(i), get_pan(i),
+    get_mute(i), get_solo(i), get_arm(i)
+)
+```
+
+- [ ] Parallel queries within each track
+- [ ] Parallel queries across tracks (batch of N at a time)
+
+#### 3. OSC Subscriptions (Medium-Hard)
+AbletonOSC supports `/live/*/start_listen` - Ableton pushes changes to us.
+
+```python
+# Subscribe to track 0 volume changes
+client.send("/live/track/start_listen/volume", 0)
+
+# Now Ableton will send us messages when volume changes
+# Handler updates cache automatically
+```
+
+- [ ] Subscribe to track property changes
+- [ ] Subscribe to transport changes
+- [ ] Subscribe to track add/delete
+- [ ] Unsubscribe on disconnect
+
+#### 4. Minimal Context for Claude (Easy)
+Claude doesn't need full state for most commands. "Mute the drums" only needs track names.
+
+```python
+# Full state (current)
+{"tempo": 88, "tracks": [{"name": "Drums", "volume": 0.85, "pan": 0, ...}]}
+
+# Minimal state (faster)
+{"tempo": 88, "track_names": ["Drums", "Bass", "Keys"]}
+```
+
+- [ ] `cache.to_minimal_dict()` for common commands
+- [ ] Full state only when Claude asks for details
+
+#### 5. Lazy Loading (Medium)
+Only query what's needed. If Claude mentions "the drums", query just that track.
+
+- [ ] Query track by name on-demand
+- [ ] Cache individual tracks as they're accessed
+- [ ] Background refresh for full state
+
+---
+
 ## Priority Order
 
-1. **Claude Engine** - Core intelligence
-2. **CLI** - Fastest way to test
-3. **Session Cache** - Makes AI smarter
-4. **Web UI** - Better UX
-5. **Plugin Profiles** - Deep control
+1. ~~**Claude Engine**~~ ✅ - Core intelligence
+2. ~~**CLI**~~ ✅ - Fastest way to test
+3. ~~**Session Cache**~~ ✅ - Makes AI smarter
+4. **Cache Optimizations** - Scale to large sessions
+5. **Web UI** - Better UX
+6. **Plugin Profiles** - Deep control
 
 ---
 
 ## Definition of Done (MVP)
 
-- [ ] Can say "create a track called Lead" → track appears in Ableton
-- [ ] Can say "set tempo to 90" → tempo changes
-- [ ] Can say "make track 1 quieter" → volume decreases
-- [ ] Shows what Claude is "thinking"
-- [ ] Works via CLI or web interface
+- [x] Can say "create a track called Lead" → track appears in Ableton
+- [x] Can say "set tempo to 90" → tempo changes
+- [x] Can say "make track 1 quieter" → volume decreases
+- [x] Shows what Claude is "thinking"
+- [x] Works via CLI
+- [ ] Works via web interface

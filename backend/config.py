@@ -26,7 +26,7 @@ class Config:
     ableton_host: str = "127.0.0.1"
     ableton_send_port: int = 11000
     ableton_receive_port: int = 11001
-    ableton_timeout: float = 5.0
+    ableton_timeout: float = 1.0  # 1 sec is plenty for local OSC
 
     # Server
     server_host: str = "0.0.0.0"
