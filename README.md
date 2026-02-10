@@ -1,51 +1,56 @@
-# Ableton AI Assistant
+# TR-AIS
 
-An AI-powered production assistant that controls Ableton Live through natural language.
+An AI-powered assistant for Ableton Live. Talk to your DAW like a collaborator.
 
-> **Note:** This project evolved from TR-AIS (a drum pattern generator for Roland TR-8S). The original beat-machine functionality is preserved in the `beat-machine/` directory.
+```
+> mute the bass and set tempo to 95
+[Thinking...] User wants to mute "AI Bass" (track 4) and change tempo
+[OK] set_track_mute: track 4 muted
+[OK] set_tempo: 95 BPM
 
-## Vision
+Muted the AI Bass track and set the tempo to 95 BPM.
+```
 
-Talk to your DAW like a collaborator:
+## Status
 
-- *"I want a drum beat in 80s ballad style"* → Selects instrument, creates pattern, adjusts parameters
-- *"More reverb on Track 3 when the swell hits"* → Understands arrangement, creates automation
-- *"Make the bass more aggressive"* → Knows which plugin and parameters control "aggression"
+**Working prototype.** Core functionality proven, now focused on scale and safety.
 
-## Current Status
+| Feature | Status |
+|---------|--------|
+| Natural language → Ableton commands | ✅ |
+| Transport control (play, stop, tempo) | ✅ |
+| Track control (volume, pan, mute, solo) | ✅ |
+| Device parameters | ✅ |
+| Session state caching | ✅ |
+| Undo/revert changes | ❌ TODO |
+| Large session support (100+ tracks) | ❌ TODO |
+| Web UI | ❌ TODO |
 
-**Core features working:**
-- [x] Modular Ableton control via OSC (`backend/ableton/`)
-- [x] Transport, tracks, and device parameter control
-- [x] Verified working with Ableton Live 12
-- [x] Session state caching (tracks, devices, mixer state)
-- [x] Claude AI integration (natural language → Ableton commands)
-- [x] CLI interface
-- [ ] Web UI
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full vision and roadmap.
 
 ## Quick Start
 
 ### Prerequisites
 
-- Ableton Live 11+ with [AbletonOSC](https://github.com/ideoforms/AbletonOSC) installed
+- Ableton Live 11+ with [AbletonOSC](https://github.com/ideoforms/AbletonOSC)
 - Python 3.10+
 - [uv](https://github.com/astral-sh/uv) package manager
+- Anthropic API key
 
 ### Setup
 
 ```bash
-# Clone and setup
 git clone https://github.com/jimmypocock/TR-AIS.git
 cd TR-AIS
 
-# Create virtual environment
+# Create environment
 uv venv .venv
 source .venv/bin/activate
 uv pip install -r requirements.txt
 
-# Set your API key
+# Add API key
 cp .env.example .env
-# Edit .env and add ANTHROPIC_API_KEY
+# Edit .env: ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 ### Install AbletonOSC
@@ -53,107 +58,49 @@ cp .env.example .env
 1. Download from [github.com/ideoforms/AbletonOSC](https://github.com/ideoforms/AbletonOSC)
 2. Copy to `~/Music/Ableton/User Library/Remote Scripts/AbletonOSC/`
 3. In Ableton: Preferences → Link/Tempo/MIDI → Control Surface → AbletonOSC
-4. You should see "Listening for OSC on port 11000" in Ableton's status bar
+4. Look for "Listening for OSC on port 11000" in status bar
 
-### Test Connection
-
-```bash
-source .venv/bin/activate
-python3 -c "
-import asyncio
-from backend.ableton import AbletonClient
-
-async def test():
-    client = AbletonClient()
-    await client.connect()
-    await client.transport.set_tempo(100)
-    print('Check Ableton - tempo should be 100 BPM')
-    client.disconnect()
-
-asyncio.run(test())
-"
-```
-
-### Run the AI Assistant
+### Run
 
 ```bash
 ./trais
 ```
 
-Or:
-
-```bash
-python3 -m backend.cli
-```
-
-Then try commands like:
+Try:
 - "create a synth track"
-- "set tempo to 95"
+- "set tempo to 120"
 - "mute the drums"
-- "make track 2 quieter"
+- "make track 2 louder"
+- "state" (show session info)
 
 ## Project Structure
 
 ```
 .
+├── trais                  # CLI launcher
 ├── backend/
-│   ├── ableton/           # Modular Ableton control
-│   │   ├── client.py      # Connection + OSC
-│   │   ├── transport.py   # play, stop, tempo
-│   │   ├── tracks.py      # create, volume, pan
-│   │   └── devices.py     # parameters
-│   └── config.py
+│   ├── ableton/           # OSC client for Ableton
+│   ├── claude_engine.py   # Natural language → commands
+│   ├── executor.py        # Commands → Ableton
+│   ├── session_cache.py   # Session state mirror
+│   └── cli.py             # REPL interface
+├── docs/
+│   ├── ARCHITECTURE.md    # Vision and roadmap
+│   ├── ROADMAP.md         # Detailed task breakdown
+│   └── SESSION-CACHING.md # How caching works
 ├── beat-machine/          # Original TR-AIS (drum patterns for TR-8S)
-├── plugins/               # Plugin parameter profiles (TODO)
-├── tests/
-└── docs/
+└── tests/
 ```
 
-## Usage (Python API)
+## What's Next
 
-```python
-from backend.ableton import AbletonClient
+1. **Undo system** - Track changes, allow revert (like Claude Code)
+2. **Smart context** - Handle 100+ track sessions efficiently
+3. **Web UI** - Chat interface with session visualization
 
-client = AbletonClient()
-await client.connect()
+## Origins
 
-# Transport
-await client.transport.play()
-await client.transport.set_tempo(120)
-
-# Tracks
-idx = await client.tracks.create_midi("Synth Lead")
-await client.tracks.set_volume(idx, 0.8)
-await client.tracks.set_pan(idx, -0.3)
-
-# Devices
-await client.devices.set_parameter(track=0, device=0, param=3, value=0.7)
-params = await client.devices.get_parameter_names(track=0, device=0)
-
-client.disconnect()
-```
-
-## Beat Machine (Legacy)
-
-The original TR-AIS drum pattern generator is still available:
-
-```bash
-cd beat-machine
-pip3 install -r requirements.txt
-python3 main.py
-```
-
-Open http://localhost:8000 to generate drum patterns for Roland TR-8S via natural language.
-
-## Development
-
-```bash
-# Run unit tests
-pytest tests/unit/ -v
-
-# Run with Ableton open
-pytest tests/integration/ -v
-```
+This project evolved from TR-AIS, a drum pattern generator for Roland TR-8S. That code is preserved in `beat-machine/`.
 
 ## License
 
