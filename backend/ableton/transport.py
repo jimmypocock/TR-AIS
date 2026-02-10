@@ -82,6 +82,11 @@ class TransportController:
         """Enable/disable metronome."""
         self._client.send("/live/song/set/metronome", int(enabled))
 
+    async def toggle_metronome(self):
+        """Toggle metronome on/off."""
+        current = await self.get_metronome()
+        await self.set_metronome(not current if current is not None else True)
+
     # --- Loop ---
 
     async def get_loop(self) -> Optional[bool]:
@@ -128,14 +133,22 @@ class TransportController:
 
     # --- Recording ---
 
-    async def get_record_mode(self) -> Optional[bool]:
-        """Get session record mode."""
+    async def is_recording(self) -> Optional[bool]:
+        """Check if session is recording."""
         result = await self._client.send_and_wait("/live/song/get/record_mode")
-        return bool(result[0]) if result else None
+        if result:
+            self._client.state.recording = bool(result[0])
+            return self._client.state.recording
+        return None
+
+    async def get_record_mode(self) -> Optional[bool]:
+        """Get session record mode (alias for is_recording)."""
+        return await self.is_recording()
 
     async def set_record_mode(self, enabled: bool):
         """Enable/disable session record mode."""
         self._client.send("/live/song/set/record_mode", int(enabled))
+        self._client.state.recording = enabled
 
     # --- Undo/Redo ---
 
