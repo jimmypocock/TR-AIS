@@ -13,27 +13,7 @@ import sys
 from .ableton import AbletonClient
 from .claude_engine import ClaudeEngine
 from .executor import CommandExecutor
-
-
-async def get_session_state(client: AbletonClient) -> dict:
-    """Get current session state for Claude context."""
-    state = {
-        "tempo": await client.transport.get_tempo(),
-        "playing": await client.transport.is_playing(),
-        "tracks": []
-    }
-
-    # Get track count and info
-    track_count = await client.tracks.get_count()
-    if track_count:
-        for i in range(track_count):
-            track_info = {
-                "index": i,
-                "name": f"Track {i + 1}",  # Will be replaced when we have name fetching
-            }
-            state["tracks"].append(track_info)
-
-    return state
+from .session_cache import SessionCache
 
 
 async def main():
@@ -50,8 +30,8 @@ async def main():
     except ValueError as e:
         print(f"[ERROR] {e}")
         print()
-        print("Set your API key:")
-        print("  export ANTHROPIC_API_KEY=sk-ant-...")
+        print("Set your API key in .env:")
+        print("  ANTHROPIC_API_KEY=sk-ant-...")
         return
 
     # Connect to Ableton
@@ -72,10 +52,22 @@ async def main():
         print(f"[ERROR] Connection failed: {e}")
         return
 
-    # Get initial state
-    tempo = await client.transport.get_tempo()
-    track_count = await client.tracks.get_count()
-    print(f"[OK] Connected to Ableton (tempo: {tempo} BPM, {track_count} tracks)")
+    # Initialize session cache
+    cache = SessionCache(client)
+    print("[...] Loading session state...")
+    await cache.refresh()
+    state = cache.state
+
+    print(f"[OK] Connected to Ableton (tempo: {state.tempo} BPM, {len(state.tracks)} tracks)")
+
+    # Show tracks
+    if state.tracks:
+        print()
+        print("Tracks:")
+        for t in state.tracks:
+            devices_str = f" [{len(t.devices)} devices]" if t.devices else ""
+            print(f"  [{t.index}] {t.name}{devices_str}")
+
     print()
 
     # Create executor
@@ -84,7 +76,7 @@ async def main():
     # Print help
     print("Commands:")
     print("  Type natural language to control Ableton")
-    print("  'state' - Show current session state")
+    print("  'state' or 'refresh' - Refresh and show session state")
     print("  'quit' or 'exit' - Exit the CLI")
     print()
     print("-" * 50)
@@ -103,17 +95,40 @@ async def main():
                 print("Goodbye!")
                 break
 
-            if user_input.lower() == "state":
-                state = await get_session_state(client)
-                print(f"Tempo: {state['tempo']} BPM")
-                print(f"Playing: {state['playing']}")
-                print(f"Tracks: {len(state['tracks'])}")
-                for t in state["tracks"]:
-                    print(f"  [{t['index']}] {t['name']}")
+            if user_input.lower() in ("state", "refresh"):
+                print("[...] Refreshing session state...")
+                await cache.refresh()
+                state = cache.state
+
+                print(f"Tempo: {state.tempo} BPM")
+                print(f"Playing: {state.playing}")
+                print(f"Recording: {state.recording}")
+                print(f"Metronome: {'on' if state.metronome else 'off'}")
+                print()
+                print(f"Tracks ({len(state.tracks)}):")
+                for t in state.tracks:
+                    status = []
+                    if t.muted:
+                        status.append("M")
+                    if t.soloed:
+                        status.append("S")
+                    if t.armed:
+                        status.append("R")
+                    status_str = f" [{' '.join(status)}]" if status else ""
+
+                    devices = [d.name for d in t.devices]
+                    devices_str = f" → {', '.join(devices)}" if devices else ""
+
+                    vol_pct = int(t.volume * 100)
+                    pan_str = f"L{int(-t.pan*100)}" if t.pan < 0 else f"R{int(t.pan*100)}" if t.pan > 0 else "C"
+
+                    print(f"  [{t.index}] {t.name} (vol:{vol_pct}% pan:{pan_str}){status_str}{devices_str}")
                 continue
 
-            # Get current session state
-            session_state = await get_session_state(client)
+            # Get current session state for Claude context
+            # Quick refresh before processing
+            await cache.refresh(include_devices=False)
+            session_state = cache.state.to_dict()
 
             # Process with Claude
             print("[Thinking...]")
@@ -123,7 +138,7 @@ async def main():
                 print(f"[Error] {result.error}")
                 continue
 
-            # Show thinking (optional)
+            # Show thinking
             if result.thinking:
                 print(f"[Thought] {result.thinking}")
 

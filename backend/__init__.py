@@ -9,6 +9,7 @@ __version__ = "0.1.0"
 from .config import Config, config
 from .claude_engine import ClaudeEngine, ClaudeResponse
 from .executor import CommandExecutor, ExecutionResult, ExecutionReport
+from .session_cache import SessionCache, SessionState, CachedTrack, CachedDevice
 
 __all__ = [
     "Config",
@@ -18,4 +19,8 @@ __all__ = [
     "CommandExecutor",
     "ExecutionResult",
     "ExecutionReport",
+    "SessionCache",
+    "SessionState",
+    "CachedTrack",
+    "CachedDevice",
 ]
