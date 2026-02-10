@@ -348,9 +348,28 @@ Only query what's needed. If Claude mentions "the drums", query just that track.
 1. ~~**Claude Engine**~~ ✅ - Core intelligence
 2. ~~**CLI**~~ ✅ - Fastest way to test
 3. ~~**Session Cache**~~ ✅ - Makes AI smarter
-4. **Cache Optimizations** - Scale to large sessions
-5. **Web UI** - Better UX
-6. **Plugin Profiles** - Deep control
+4. **Undo System** - Critical for trust
+5. **Cache Optimizations** - Scale to large sessions
+6. **Web UI** - Better UX
+7. **Plugin Profiles** - Deep control
+
+---
+
+## Alternative: Instrument Mode
+
+See [INSTRUMENT_MODE.md](INSTRUMENT_MODE.md) for a different approach:
+
+Instead of an AI that controls the entire session, what if it's a **M4L device that lives on a single track**?
+
+- Context naturally scoped (one track, not 100)
+- Fits Ableton's mental model (it's just a device)
+- Multiple instances with different specializations
+- Safer by design (can't mess with other tracks)
+
+This could be:
+- A simpler V1 product
+- A parallel track alongside Producer Mode
+- The "instrument" to Producer Mode's "conductor"
 
 ---
 

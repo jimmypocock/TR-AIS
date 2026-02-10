@@ -174,6 +174,12 @@ def on_volume_change(track_index, new_volume):
 
 **Recommendation:** Stay with Option A for now. Web UI is fine. Don't prematurely optimize for in-Ableton integration.
 
+### Alternative: Instrument Mode
+
+See [INSTRUMENT_MODE.md](INSTRUMENT_MODE.md) for a track-scoped approach:
+
+Instead of controlling the whole session, the AI lives as a **device on a single track**. Context is naturally limited, it fits Ableton's model, and it's safer. Could be a simpler V1 or a parallel product.
+
 ---
 
 ## Roadmap: What's Next
