@@ -6,14 +6,14 @@ import pytest
 import sys
 from pathlib import Path
 
-# Add backend to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 @pytest.fixture
 def ableton_config():
     """Provide test Ableton configuration."""
-    from backend.ableton_engine import AbletonConfig
+    from backend.ableton import AbletonConfig
     return AbletonConfig(
         host="127.0.0.1",
         send_port=11000,
