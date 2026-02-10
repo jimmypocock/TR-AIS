@@ -2,11 +2,17 @@
 Configuration management for Ableton AI Assistant.
 
 Uses environment variables with sensible defaults.
+Loads from .env file if present.
 """
 
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load .env file from project root
+load_dotenv()
 
 
 @dataclass
