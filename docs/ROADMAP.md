@@ -9,9 +9,26 @@
   - Devices: get/set parameters
   - Verified working with Live 12
 
+- [x] **Claude Engine** (`backend/claude_engine.py`)
+  - Natural language → structured commands
+  - Session state injected as context
+
+- [x] **CLI** (`backend/cli.py`)
+  - REPL for natural language control
+  - Undo, history commands
+
+- [x] **Session Cache** (`backend/session_cache.py`)
+  - Snapshot of tracks, devices, transport state
+  - Search by track/device name
+
+- [x] **Undo System** (`backend/change_ledger.py`)
+  - Records before/after values for all changes
+  - Undo last N changes via CLI
+  - Change history with timestamps
+
 - [x] **Project structure**
   - Modular package design
-  - Unit tests (14 passing)
+  - Unit tests (108 passing)
   - Beat-machine preserved as module
 
 ---
@@ -348,7 +365,7 @@ Only query what's needed. If Claude mentions "the drums", query just that track.
 1. ~~**Claude Engine**~~ ✅ - Core intelligence
 2. ~~**CLI**~~ ✅ - Fastest way to test
 3. ~~**Session Cache**~~ ✅ - Makes AI smarter
-4. **Undo System** - Critical for trust
+4. ~~**Undo System**~~ ✅ - Critical for trust
 5. **Cache Optimizations** - Scale to large sessions
 6. **Web UI** - Better UX
 7. **Plugin Profiles** - Deep control
