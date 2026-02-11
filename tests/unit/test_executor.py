@@ -12,6 +12,7 @@ from backend.executor import (
     ExecutionResult,
     ExecutionReport,
 )
+from backend.change_ledger import ChangeLedger, ChangeType
 
 
 class TestExecutionResult:
@@ -37,6 +38,16 @@ class TestExecutionResult:
         )
         assert result.success is False
         assert result.error == "Connection lost"
+
+    def test_result_with_change_id(self):
+        """Test result includes change ID."""
+        result = ExecutionResult(
+            action="set_tempo",
+            success=True,
+            result={"tempo": 120},
+            change_id="abc123"
+        )
+        assert result.change_id == "abc123"
 
 
 class TestExecutionReport:
@@ -87,6 +98,7 @@ class TestCommandExecutor:
         client.transport = MagicMock()
         client.transport.play = AsyncMock()
         client.transport.stop = AsyncMock()
+        client.transport.get_tempo = AsyncMock(return_value=120.0)
         client.transport.set_tempo = AsyncMock()
         client.transport.toggle_metronome = AsyncMock()
 
@@ -95,14 +107,20 @@ class TestCommandExecutor:
         client.tracks.create_midi = AsyncMock(return_value=0)
         client.tracks.create_audio = AsyncMock(return_value=1)
         client.tracks.delete = AsyncMock()
+        client.tracks.get_volume = AsyncMock(return_value=0.85)
         client.tracks.set_volume = AsyncMock()
+        client.tracks.get_pan = AsyncMock(return_value=0.0)
         client.tracks.set_pan = AsyncMock()
+        client.tracks.get_mute = AsyncMock(return_value=False)
         client.tracks.set_mute = AsyncMock()
+        client.tracks.get_solo = AsyncMock(return_value=False)
         client.tracks.set_solo = AsyncMock()
+        client.tracks.get_arm = AsyncMock(return_value=False)
         client.tracks.set_arm = AsyncMock()
 
         # Mock devices
         client.devices = MagicMock()
+        client.devices.get_parameter = AsyncMock(return_value=0.5)
         client.devices.set_parameter = AsyncMock()
 
         return client
@@ -134,12 +152,25 @@ class TestCommandExecutor:
     @pytest.mark.asyncio
     async def test_execute_set_tempo(self, executor, mock_client):
         """Test executing set_tempo command."""
-        commands = [{"action": "set_tempo", "params": {"bpm": 120.0}}]
+        commands = [{"action": "set_tempo", "params": {"bpm": 100.0}}]
         report = await executor.execute(commands)
 
         assert report.success_count == 1
-        mock_client.transport.set_tempo.assert_called_once_with(120.0)
-        assert report.results[0].result == {"tempo": 120.0}
+        mock_client.transport.set_tempo.assert_called_once_with(100.0)
+        assert report.results[0].result["tempo"] == 100.0
+        assert report.results[0].result["previous"] == 120.0
+
+    @pytest.mark.asyncio
+    async def test_execute_set_tempo_records_change(self, executor):
+        """Test set_tempo records to ledger."""
+        commands = [{"action": "set_tempo", "params": {"bpm": 100.0}}]
+        await executor.execute(commands)
+
+        assert executor.ledger.pending_count == 1
+        change = executor.ledger.get_undo_candidate()
+        assert change.change_type == ChangeType.TEMPO
+        assert change.old_value == 120.0
+        assert change.new_value == 100.0
 
     @pytest.mark.asyncio
     async def test_execute_create_midi_track(self, executor, mock_client):
@@ -152,6 +183,17 @@ class TestCommandExecutor:
         assert report.results[0].result["name"] == "Bass"
 
     @pytest.mark.asyncio
+    async def test_execute_create_track_records_change(self, executor):
+        """Test create_track records to ledger."""
+        commands = [{"action": "create_midi_track", "params": {"name": "Synth"}}]
+        await executor.execute(commands)
+
+        assert executor.ledger.pending_count == 1
+        change = executor.ledger.get_undo_candidate()
+        assert change.change_type == ChangeType.TRACK_CREATE
+        assert change.new_value == "Synth"
+
+    @pytest.mark.asyncio
     async def test_execute_set_track_volume(self, executor, mock_client):
         """Test executing set_track_volume command."""
         commands = [{"action": "set_track_volume", "params": {"track_index": 0, "volume": 0.5}}]
@@ -159,6 +201,7 @@ class TestCommandExecutor:
 
         assert report.success_count == 1
         mock_client.tracks.set_volume.assert_called_once_with(0, 0.5)
+        assert report.results[0].result["previous"] == 0.85
 
     @pytest.mark.asyncio
     async def test_execute_set_track_pan(self, executor, mock_client):
@@ -168,6 +211,16 @@ class TestCommandExecutor:
 
         assert report.success_count == 1
         mock_client.tracks.set_pan.assert_called_once_with(1, -0.5)
+
+    @pytest.mark.asyncio
+    async def test_execute_set_track_mute(self, executor, mock_client):
+        """Test executing set_track_mute command."""
+        commands = [{"action": "set_track_mute", "params": {"track_index": 0, "muted": True}}]
+        report = await executor.execute(commands)
+
+        assert report.success_count == 1
+        mock_client.tracks.set_mute.assert_called_once_with(0, True)
+        assert executor.ledger.pending_count == 1
 
     @pytest.mark.asyncio
     async def test_execute_set_device_parameter(self, executor, mock_client):
@@ -185,6 +238,7 @@ class TestCommandExecutor:
 
         assert report.success_count == 1
         mock_client.devices.set_parameter.assert_called_once_with(0, 1, 3, 0.7)
+        assert report.results[0].result["previous"] == 0.5
 
     @pytest.mark.asyncio
     async def test_execute_unknown_action(self, executor):
@@ -223,3 +277,111 @@ class TestCommandExecutor:
         assert report.success_count == 0
         assert report.error_count == 1
         assert "Connection lost" in report.results[0].error
+
+
+class TestCommandExecutorUndo:
+    """Tests for undo functionality."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mock Ableton client."""
+        client = MagicMock()
+
+        client.transport = MagicMock()
+        client.transport.get_tempo = AsyncMock(return_value=120.0)
+        client.transport.set_tempo = AsyncMock()
+
+        client.tracks = MagicMock()
+        client.tracks.get_volume = AsyncMock(return_value=0.85)
+        client.tracks.set_volume = AsyncMock()
+        client.tracks.get_mute = AsyncMock(return_value=False)
+        client.tracks.set_mute = AsyncMock()
+        client.tracks.delete = AsyncMock()
+        client.tracks.create_midi = AsyncMock(return_value=5)
+
+        client.devices = MagicMock()
+        client.devices.get_parameter = AsyncMock(return_value=0.5)
+        client.devices.set_parameter = AsyncMock()
+
+        return client
+
+    @pytest.fixture
+    def executor(self, mock_client):
+        """Create executor with mock client."""
+        return CommandExecutor(mock_client)
+
+    @pytest.mark.asyncio
+    async def test_undo_tempo(self, executor, mock_client):
+        """Test undoing tempo change."""
+        # Make a change
+        await executor.execute([{"action": "set_tempo", "params": {"bpm": 100}}])
+
+        # Undo it
+        results = await executor.undo(1)
+
+        assert len(results) == 1
+        assert results[0].success is True
+        # Should set back to 120 (the old value)
+        mock_client.transport.set_tempo.assert_called_with(120.0)
+
+    @pytest.mark.asyncio
+    async def test_undo_mute(self, executor, mock_client):
+        """Test undoing mute."""
+        # Make a change
+        await executor.execute([{"action": "set_track_mute", "params": {"track_index": 0, "muted": True}}])
+
+        # Undo it
+        results = await executor.undo(1)
+
+        assert len(results) == 1
+        assert results[0].success is True
+        # Should set back to False (unmuted)
+        mock_client.tracks.set_mute.assert_called_with(0, False)
+
+    @pytest.mark.asyncio
+    async def test_undo_track_create(self, executor, mock_client):
+        """Test undoing track creation (deletes the track)."""
+        # Create a track
+        await executor.execute([{"action": "create_midi_track", "params": {"name": "Test"}}])
+
+        # Undo it (should delete)
+        results = await executor.undo(1)
+
+        assert len(results) == 1
+        assert results[0].success is True
+        mock_client.tracks.delete.assert_called_once_with(5)  # The created track index
+
+    @pytest.mark.asyncio
+    async def test_undo_multiple(self, executor, mock_client):
+        """Test undoing multiple changes."""
+        # Make multiple changes
+        await executor.execute([
+            {"action": "set_tempo", "params": {"bpm": 100}},
+            {"action": "set_track_mute", "params": {"track_index": 0, "muted": True}},
+        ])
+
+        assert executor.ledger.pending_count == 2
+
+        # Undo both
+        results = await executor.undo(2)
+
+        assert len(results) == 2
+        assert all(r.success for r in results)
+        assert executor.ledger.pending_count == 0
+
+    @pytest.mark.asyncio
+    async def test_undo_nothing_to_undo(self, executor):
+        """Test undo when nothing to undo."""
+        results = await executor.undo(1)
+        assert len(results) == 0
+
+    @pytest.mark.asyncio
+    async def test_undo_marks_reverted(self, executor, mock_client):
+        """Test undo marks change as reverted."""
+        await executor.execute([{"action": "set_tempo", "params": {"bpm": 100}}])
+        change = executor.ledger.get_undo_candidate()
+
+        await executor.undo(1)
+
+        assert change.reverted is True
+        assert executor.ledger.pending_count == 0

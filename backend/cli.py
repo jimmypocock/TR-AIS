@@ -8,12 +8,13 @@ Usage:
 """
 
 import asyncio
-import sys
+import re
 
 from .ableton import AbletonClient
 from .claude_engine import ClaudeEngine
 from .executor import CommandExecutor
 from .session_cache import SessionCache
+from .change_ledger import ChangeLedger
 
 
 async def main():
@@ -77,12 +78,16 @@ async def main():
 
     print()
 
-    # Create executor
-    executor = CommandExecutor(client)
+    # Create ledger and executor
+    ledger = ChangeLedger()
+    executor = CommandExecutor(client, ledger)
 
     # Print help
     print("Commands:")
     print("  Type natural language to control Ableton")
+    print("  'undo' - Undo last change")
+    print("  'undo N' - Undo last N changes")
+    print("  'history' - Show recent changes")
     print("  'state' or 'refresh' - Refresh and show session state")
     print("  'quit' or 'exit' - Exit the CLI")
     print()
@@ -102,6 +107,55 @@ async def main():
                 print("Goodbye!")
                 break
 
+            # Undo command
+            if user_input.lower() == "undo":
+                if ledger.pending_count == 0:
+                    print("Nothing to undo.")
+                    continue
+
+                results = await executor.undo(1)
+                for r in results:
+                    if r.success:
+                        print(f"[Undone] {r.result['undone']}")
+                    else:
+                        print(f"[Failed] {r.error}")
+                continue
+
+            # Undo N command
+            undo_match = re.match(r"undo\s+(\d+)", user_input.lower())
+            if undo_match:
+                count = int(undo_match.group(1))
+                if ledger.pending_count == 0:
+                    print("Nothing to undo.")
+                    continue
+
+                actual_count = min(count, ledger.pending_count)
+                if actual_count < count:
+                    print(f"Only {actual_count} change(s) to undo.")
+
+                results = await executor.undo(actual_count)
+                for r in results:
+                    if r.success:
+                        print(f"[Undone] {r.result['undone']}")
+                    else:
+                        print(f"[Failed] {r.error}")
+                continue
+
+            # History command
+            if user_input.lower() in ("history", "changes"):
+                history = ledger.get_history(limit=10, include_reverted=True)
+                if not history:
+                    print("No changes recorded yet.")
+                    continue
+
+                print(f"Recent changes ({ledger.pending_count} undoable):")
+                for change in history:
+                    status = "[reverted]" if change.reverted else "[active]"
+                    time_str = change.timestamp.strftime("%H:%M:%S")
+                    print(f"  {time_str} {status} {change.description}")
+                continue
+
+            # State/refresh command
             if user_input.lower() in ("state", "refresh"):
                 print("[...] Refreshing session state...")
                 await cache.refresh()
