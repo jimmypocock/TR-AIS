@@ -1,0 +1,17 @@
+{
+  "name": "tr-ais-m4l",
+  "version": "0.1.0",
+  "description": "AI assistant for Ableton Live track control",
+  "main": "main.js",
+  "scripts": {
+    "test": "node -e \"console.log('OK')\""
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "author": "TR-AIS",
+  "license": "MIT"
+}
