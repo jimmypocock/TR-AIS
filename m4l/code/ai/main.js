@@ -25,6 +25,7 @@ const {
     SESSIONS_DIR
 } = require("./sessions");
 const { SYSTEM_PROMPT } = require("./prompt");
+const { handleCommand } = require("./commands");
 
 // Track current session info for status reporting
 let currentTrackName = null;
@@ -112,6 +113,25 @@ maxAPI.addHandler("chat", async (payloadJson) => {
             maxAPI.post("Track changed: " + currentTrackName + " -> " + trackName);
         }
         currentTrackName = trackName;
+
+        // Handle slash commands (e.g., /newchat, /status, /help)
+        if (message.startsWith("/")) {
+            maxAPI.post("Command detected: " + message);
+
+            // Build context for command execution
+            const commandContext = {
+                trackName,
+                currentSession,
+                maxAPI,
+                setCurrentSession: (session) => { currentSession = session; }
+            };
+
+            const result = handleCommand(message, commandContext);
+            if (result) {
+                maxAPI.outlet("response", JSON.stringify(result));
+                return;
+            }
+        }
 
         maxAPI.post("Processing on track '" + trackName + "': " + message);
 
