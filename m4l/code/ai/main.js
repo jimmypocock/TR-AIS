@@ -95,26 +95,30 @@ maxAPI.addHandler("chat", async (payloadJson) => {
 
         maxAPI.post("Processing: " + message);
 
-        // Build the user message with context
-        const userContent = `Current track state:
-${JSON.stringify(context, null, 2)}
+        // Store ONLY the user's request in history (not the bulky context)
+        addMessage("user", message);
 
-User request: ${message}`;
+        // Build messages array with context injected into ONLY the latest message
+        const history = getMessages();
+        const messagesForClaude = history.map((msg, i) => {
+            // Inject track context only into the most recent user message
+            if (i === history.length - 1 && msg.role === "user") {
+                return {
+                    role: "user",
+                    content: `Current track state:\n${JSON.stringify(context, null, 2)}\n\nUser request: ${msg.content}`
+                };
+            }
+            return msg;
+        });
 
-        // Add user message to conversation history
-        addMessage("user", userContent);
+        maxAPI.post("Sending " + messagesForClaude.length + " messages to Claude");
 
-        // Get full conversation history for Claude
-        const messages = getMessages();
-
-        maxAPI.post("Sending " + messages.length + " messages to Claude");
-
-        // Call Claude with full conversation history
+        // Call Claude with conversation history
         const response = await getClient().messages.create({
             model: "claude-sonnet-4-20250514",
             max_tokens: 1024,
             system: SYSTEM_PROMPT,
-            messages: messages
+            messages: messagesForClaude
         });
 
         // Extract the text response
