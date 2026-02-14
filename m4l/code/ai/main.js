@@ -16,8 +16,19 @@ const maxAPI = require("max-api");
 // Import modules
 const { loadConfig, saveConfig, CONFIG_FILE } = require("./config");
 const { initializeClient, getClient, clearClient, isReady } = require("./client");
-const { addMessage, getMessages, clear: clearConversation, getLength } = require("./conversation");
+const {
+    getOrCreateSession,
+    addMessage,
+    getMessages,
+    clearSession,
+    getMessageCount,
+    SESSIONS_DIR
+} = require("./sessions");
 const { SYSTEM_PROMPT } = require("./prompt");
+
+// Track current session info for status reporting
+let currentTrackName = null;
+let currentSession = null;
 
 // =============================================================================
 // INITIALIZATION
@@ -93,13 +104,25 @@ maxAPI.addHandler("chat", async (payloadJson) => {
         const payload = JSON.parse(payloadJson);
         const { message, context } = payload;
 
-        maxAPI.post("Processing: " + message);
+        // Get track name from context (fallback to "unknown" if not provided)
+        const trackName = context.trackName || context.name || "unknown";
 
-        // Store ONLY the user's request in history (not the bulky context)
-        addMessage("user", message);
+        // Check if track changed - if so, log it
+        if (currentTrackName && currentTrackName !== trackName) {
+            maxAPI.post("Track changed: " + currentTrackName + " -> " + trackName);
+        }
+        currentTrackName = trackName;
+
+        maxAPI.post("Processing on track '" + trackName + "': " + message);
+
+        // Get or create session for this track (handles rotation automatically)
+        currentSession = getOrCreateSession(trackName);
+
+        // Store ONLY the user's request in session (not the bulky context)
+        addMessage(currentSession, "user", message);
 
         // Build messages array with context injected into ONLY the latest message
-        const history = getMessages();
+        const history = getMessages(currentSession);
         const messagesForClaude = history.map((msg, i) => {
             // Inject track context only into the most recent user message
             if (i === history.length - 1 && msg.role === "user") {
@@ -111,7 +134,7 @@ maxAPI.addHandler("chat", async (payloadJson) => {
             return msg;
         });
 
-        maxAPI.post("Sending " + messagesForClaude.length + " messages to Claude");
+        maxAPI.post("Sending " + messagesForClaude.length + " messages to Claude (session: " + currentSession.id + ")");
 
         // Call Claude with conversation history
         const response = await getClient().messages.create({
@@ -125,8 +148,8 @@ maxAPI.addHandler("chat", async (payloadJson) => {
         const responseText = response.content[0].text;
         maxAPI.post("Raw response: " + responseText.substring(0, 100) + "...");
 
-        // Add assistant response to conversation history
-        addMessage("assistant", responseText);
+        // Add assistant response to session (auto-saves to disk)
+        addMessage(currentSession, "assistant", responseText);
 
         // Parse the JSON response
         let result;
@@ -192,7 +215,10 @@ maxAPI.addHandler("status", () => {
     const status = {
         hasApiKey: isReady(),
         configPath: CONFIG_FILE,
-        conversationLength: getLength()
+        sessionsPath: SESSIONS_DIR,
+        currentTrack: currentTrackName,
+        sessionId: currentSession ? currentSession.id : null,
+        messageCount: currentSession ? getMessageCount(currentSession) : 0
     };
     maxAPI.post("Status: " + JSON.stringify(status));
 });
@@ -207,11 +233,28 @@ maxAPI.addHandler("clearkey", () => {
     maxAPI.outlet("keycleared");
 });
 
-// Handler to clear conversation history
+// Handler to clear conversation and start new session
+// Archives the current session and starts fresh
 maxAPI.addHandler("clearchat", () => {
-    clearConversation();
-    maxAPI.post("Conversation history cleared");
+    if (currentTrackName) {
+        currentSession = clearSession(currentTrackName);
+        maxAPI.post("Session archived and cleared for track: " + currentTrackName);
+    } else {
+        maxAPI.post("No active session to clear");
+    }
     maxAPI.outlet("chatcleared");
+});
+
+// Alias for clearchat - more intuitive name
+maxAPI.addHandler("newchat", () => {
+    if (currentTrackName) {
+        currentSession = clearSession(currentTrackName);
+        maxAPI.post("New session started for track: " + currentTrackName);
+        maxAPI.outlet("newchat", currentSession.id);
+    } else {
+        maxAPI.post("Send a message first to establish track context");
+        maxAPI.outlet("error", "No track context - send a message first");
+    }
 });
 
 // =============================================================================
