@@ -1,18 +1,36 @@
 /**
- * Command Router - Handles slash commands like /newchat, /status, etc.
+ * Command Router - Handles slash commands
  *
  * Commands are loaded from individual files in this directory.
  * Each command exports: { name, aliases, description, execute(args, context) }
+ *
+ * Also supports dynamic skill activation via /<skillname>
  */
+
+const { loadSkill } = require("../config");
 
 // Load all commands
 const newchat = require("./newchat");
 const status = require("./status");
 const help = require("./help");
+const createconfig = require("./createconfig");
+const reload = require("./reload");
+const openconfig = require("./openconfig");
+const skills = require("./skills");
+const skill = require("./skill");
 
 // Register commands by name and aliases
 const commands = {};
-const commandModules = [newchat, status, help];
+const commandModules = [
+    newchat,
+    status,
+    help,
+    createconfig,
+    reload,
+    openconfig,
+    skills,
+    skill
+];
 
 for (const cmd of commandModules) {
     commands[cmd.name] = cmd;
@@ -22,14 +40,32 @@ for (const cmd of commandModules) {
 }
 
 /**
+ * Check if a command name matches a skill and activate it
+ */
+function tryActivateSkill(commandName, context) {
+    const loadedSkill = loadSkill(commandName);
+
+    if (loadedSkill) {
+        context.setCurrentSkill(loadedSkill);
+
+        return {
+            thinking: `Activated ${loadedSkill.name} skill`,
+            commands: [],
+            response: `**${loadedSkill.title}** activated!\n\nI'll now apply this expertise to our conversation.`
+        };
+    }
+
+    return null;
+}
+
+/**
  * Parse and execute a slash command
  *
- * @param {string} message - The user's message (e.g., "/newchat" or "/status")
+ * @param {string} message - The user's message (e.g., "/newchat" or "/drums")
  * @param {object} context - Context object with trackName, currentSession, maxAPI, etc.
  * @returns {object|null} - Response object if command handled, null if not a command
  */
 function handleCommand(message, context) {
-    // Check if it's a command
     if (!message.startsWith("/")) {
         return null;
     }
@@ -43,23 +79,35 @@ function handleCommand(message, context) {
     // Find command
     const command = commands[commandName];
 
-    if (!command) {
-        return {
-            thinking: "Unknown command",
-            commands: [],
-            response: `Unknown command: /${commandName}\n\nType /help for available commands.`
+    if (command) {
+        // Add commands registry to context for /help
+        const enrichedContext = {
+            ...context,
+            commands: commandModules.reduce((acc, cmd) => {
+                acc[cmd.name] = cmd;
+                return acc;
+            }, {})
         };
+
+        return command.execute(args, enrichedContext);
     }
 
-    // Execute command with context (include commands registry for /help)
-    return command.execute(args, { ...context, commands: commandModules.reduce((acc, cmd) => {
-        acc[cmd.name] = cmd;
-        return acc;
-    }, {}) });
+    // Try to activate a skill with this name
+    const skillResult = tryActivateSkill(commandName, context);
+    if (skillResult) {
+        return skillResult;
+    }
+
+    // Unknown command
+    return {
+        thinking: "Unknown command",
+        commands: [],
+        response: `Unknown command: /${commandName}\n\nType /help for commands.\nType /skills for available skills.`
+    };
 }
 
 /**
- * Get list of all registered commands (for external use)
+ * Get list of all registered commands
  */
 function getCommands() {
     return commandModules.map(cmd => ({

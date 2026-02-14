@@ -2,9 +2,9 @@
  * ChatM4L AI - node.script entry point for Max for Live
  *
  * This script runs in the node.script object and handles:
- * - Claude API calls
- * - Message processing
- * - Command generation
+ * - Multi-provider AI calls (Anthropic, OpenAI, Ollama, etc.)
+ * - Message processing with conversation history
+ * - Slash commands and skills
  *
  * Communication with Max:
  *   Input: Messages from bridge.js (v8 object)
@@ -14,22 +14,51 @@
 const maxAPI = require("max-api");
 
 // Import modules
-const { loadConfig, saveConfig, CONFIG_FILE } = require("./config");
-const { initializeClient, getClient, clearClient, isReady } = require("./client");
+const {
+    loadConfig,
+    saveConfig,
+    isConfigValid,
+    getActiveProvider,
+    getActiveModel,
+    createDefaultConfig,
+    loadSystemPrompt,
+    loadUserProfile,
+    discoverSkills,
+    loadSkill,
+    CONFIG_FILE,
+    CONFIG_DIR,
+    SESSIONS_DIR
+} = require("./config");
+
+const {
+    initializeClient,
+    sendMessage,
+    getProvider,
+    getModel,
+    clearClient,
+    isReady
+} = require("./client");
+
 const {
     getOrCreateSession,
     addMessage,
     getMessages,
     clearSession,
-    getMessageCount,
-    SESSIONS_DIR
+    getMessageCount
 } = require("./sessions");
-const { SYSTEM_PROMPT } = require("./prompt");
+
 const { handleCommand } = require("./commands");
 
-// Track current session info for status reporting
+// =============================================================================
+// STATE
+// =============================================================================
+
 let currentTrackName = null;
 let currentSession = null;
+let currentSkill = null;
+let systemPrompt = null;
+let userProfile = null;
+let appConfig = null;
 
 // =============================================================================
 // INITIALIZATION
@@ -37,56 +66,70 @@ let currentSession = null;
 
 maxAPI.post("ChatM4L AI module loading...");
 
-// Try to load API key from config on startup
-const config = loadConfig();
-if (config.apiKey) {
-    maxAPI.post("Found saved API key, initializing...");
-    if (initializeClient(config.apiKey)) {
-        maxAPI.post("Auto-loaded API key from config");
-        maxAPI.outlet("ready");
+/**
+ * Initialize the AI client from config
+ */
+function initializeFromConfig() {
+    appConfig = loadConfig();
+
+    if (!appConfig) {
+        maxAPI.post("No config found. Use /createconfig to create one.");
+        maxAPI.outlet("needsconfig");
+        return false;
     }
-} else {
-    maxAPI.post("No saved API key found");
+
+    if (!isConfigValid()) {
+        maxAPI.post("Invalid config. Use /createconfig to reset.");
+        maxAPI.outlet("needsconfig");
+        return false;
+    }
+
+    const providerName = appConfig.activeProvider;
+    const providerConfig = getActiveProvider(appConfig);
+    const modelKey = appConfig.activeModel || "default";
+
+    if (!providerConfig) {
+        maxAPI.post(`Provider '${providerName}' not found in config`);
+        maxAPI.outlet("needsconfig");
+        return false;
+    }
+
+    // Check for API key (not needed for local models like Ollama)
+    if (!providerConfig.baseUrl && (!providerConfig.apiKey || providerConfig.apiKey.startsWith("YOUR_"))) {
+        maxAPI.post(`API key not configured for ${providerName}. Edit config.json.`);
+        maxAPI.outlet("needsconfig");
+        return false;
+    }
+
+    if (initializeClient(providerName, providerConfig, modelKey)) {
+        maxAPI.post(`Initialized: ${providerName} / ${getModel()}`);
+
+        // Load system prompt
+        systemPrompt = loadSystemPrompt();
+        maxAPI.post("System prompt loaded");
+
+        // Load user profile (optional)
+        userProfile = loadUserProfile();
+        if (userProfile) {
+            maxAPI.post("User profile loaded");
+        } else {
+            maxAPI.post("No user profile (edit core/user.md to personalize)");
+        }
+
+        // Discover available skills
+        const skills = discoverSkills();
+        maxAPI.post(`Found ${skills.length} skills: ${skills.map(s => s.name).join(", ") || "none"}`);
+
+        maxAPI.outlet("ready");
+        return true;
+    }
+
+    maxAPI.outlet("error", "Failed to initialize AI client");
+    return false;
 }
 
-// =============================================================================
-// API KEY HANDLING
-// =============================================================================
-
-maxAPI.addHandler("apikey", async (key) => {
-    maxAPI.post("API key received");
-
-    // Validate key isn't empty
-    if (!key || key.trim() === "") {
-        maxAPI.outlet("error", "API key cannot be empty");
-        return;
-    }
-
-    if (initializeClient(key)) {
-        maxAPI.post("Anthropic client initialized");
-        maxAPI.outlet("ready");
-
-        // Save to config file for future instances
-        const config = loadConfig();
-        config.apiKey = key;
-        if (saveConfig(config)) {
-            maxAPI.post("Config saved to: " + CONFIG_FILE);
-            maxAPI.post("API key saved - will auto-load next time");
-
-            // Verify it was saved correctly
-            const verifyConfig = loadConfig();
-            if (verifyConfig.apiKey === key) {
-                maxAPI.outlet("keysaved");
-            } else {
-                maxAPI.outlet("error", "Failed to verify saved key");
-            }
-        } else {
-            maxAPI.outlet("error", "Failed to save API key");
-        }
-    } else {
-        maxAPI.outlet("error", "Failed to initialize AI");
-    }
-});
+// Run initialization
+initializeFromConfig();
 
 // =============================================================================
 // CHAT HANDLING
@@ -95,35 +138,85 @@ maxAPI.addHandler("apikey", async (key) => {
 maxAPI.addHandler("chat", async (payloadJson) => {
     maxAPI.post("Chat handler called");
 
-    if (!isReady()) {
-        maxAPI.post("No client, sending error...");
-        maxAPI.outlet("error", "API key not configured");
-        return;
-    }
-
     try {
         const payload = JSON.parse(payloadJson);
         const { message, context } = payload;
 
-        // Get track name from context (fallback to "unknown" if not provided)
+        // Handle bootstrap commands first (these work without config)
+        if (message.startsWith("/")) {
+            const cmd = message.slice(1).split(" ")[0].toLowerCase();
+
+            if (cmd === "createconfig" || cmd === "resetconfig" || cmd === "initconfig" || cmd === "configreset") {
+                maxAPI.post("Bootstrap command: createconfig");
+                const result = createDefaultConfig();
+                if (result.created) {
+                    maxAPI.post("Config created at: " + result.configPath);
+                    if (result.backupPath) {
+                        maxAPI.post("Previous config backed up to: " + result.backupPath);
+                    }
+                    maxAPI.outlet("response", JSON.stringify({
+                        thinking: "Created default configuration",
+                        commands: [],
+                        response: `Config created!\n\nEdit your API key in:\n${result.configPath}\n\nThen run /reload to apply changes.`
+                    }));
+                } else {
+                    maxAPI.outlet("error", "Failed to create config");
+                }
+                return;
+            }
+
+            if (cmd === "reload" || cmd === "reloadconfig") {
+                maxAPI.post("Bootstrap command: reload");
+                clearClient();
+                currentSkill = null;
+                if (initializeFromConfig()) {
+                    maxAPI.outlet("response", JSON.stringify({
+                        thinking: "Reloaded configuration",
+                        commands: [],
+                        response: `Reloaded!\n\nProvider: ${getProvider()}\nModel: ${getModel()}`
+                    }));
+                }
+                return;
+            }
+
+            if (cmd === "openconfig") {
+                maxAPI.post("Bootstrap command: openconfig");
+                maxAPI.outlet("response", JSON.stringify({
+                    thinking: "User wants to open config directory",
+                    commands: [],
+                    response: `Config location:\n${CONFIG_DIR}\n\nFiles:\n• config.json - API keys and settings\n• prompts/system.md - System prompt\n• skills/ - Skill prompts`
+                }));
+                return;
+            }
+        }
+
+        // For everything else, check if client is ready
+        if (!isReady()) {
+            maxAPI.post("No client initialized");
+            maxAPI.outlet("error", "Not configured. Run /createconfig then edit config.json");
+            return;
+        }
+
+        // Get track name from context
         const trackName = context.trackName || context.name || "unknown";
 
-        // Check if track changed - if so, log it
+        // Track changes
         if (currentTrackName && currentTrackName !== trackName) {
             maxAPI.post("Track changed: " + currentTrackName + " -> " + trackName);
         }
         currentTrackName = trackName;
 
-        // Handle slash commands (e.g., /newchat, /status, /help)
+        // Handle other slash commands (these need client to be ready)
         if (message.startsWith("/")) {
             maxAPI.post("Command detected: " + message);
 
-            // Build context for command execution
             const commandContext = {
                 trackName,
                 currentSession,
+                currentSkill,
                 maxAPI,
-                setCurrentSession: (session) => { currentSession = session; }
+                setCurrentSession: (session) => { currentSession = session; },
+                setCurrentSkill: (skill) => { currentSkill = skill; }
             };
 
             const result = handleCommand(message, commandContext);
@@ -135,16 +228,15 @@ maxAPI.addHandler("chat", async (payloadJson) => {
 
         maxAPI.post("Processing on track '" + trackName + "': " + message);
 
-        // Get or create session for this track (handles rotation automatically)
+        // Get or create session
         currentSession = getOrCreateSession(trackName);
 
-        // Store ONLY the user's request in session (not the bulky context)
+        // Store user message
         addMessage(currentSession, "user", message);
 
-        // Build messages array with context injected into ONLY the latest message
+        // Build messages with context injected into latest
         const history = getMessages(currentSession);
-        const messagesForClaude = history.map((msg, i) => {
-            // Inject track context only into the most recent user message
+        const messagesForAI = history.map((msg, i) => {
             if (i === history.length - 1 && msg.role === "user") {
                 return {
                     role: "user",
@@ -154,30 +246,32 @@ maxAPI.addHandler("chat", async (payloadJson) => {
             return msg;
         });
 
-        maxAPI.post("Sending " + messagesForClaude.length + " messages to Claude (session: " + currentSession.id + ")");
+        // Build full prompt (system + user profile + skill if active)
+        let fullPrompt = systemPrompt;
+        if (userProfile) {
+            fullPrompt += "\n\n---\n\n" + userProfile;
+        }
+        if (currentSkill) {
+            fullPrompt += "\n\n---\n\n" + currentSkill.prompt;
+        }
 
-        // Call Claude with conversation history
-        const response = await getClient().messages.create({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 1024,
-            system: SYSTEM_PROMPT,
-            messages: messagesForClaude
+        maxAPI.post(`Sending ${messagesForAI.length} messages to ${getProvider()}/${getModel()}`);
+
+        // Send to AI
+        const responseText = await sendMessage(fullPrompt, messagesForAI, {
+            maxTokens: appConfig?.settings?.maxTokens || 1024
         });
 
-        // Extract the text response
-        const responseText = response.content[0].text;
         maxAPI.post("Raw response: " + responseText.substring(0, 100) + "...");
 
-        // Add assistant response to session (auto-saves to disk)
+        // Store assistant response
         addMessage(currentSession, "assistant", responseText);
 
-        // Parse the JSON response
+        // Parse JSON response
         let result;
         try {
-            // Try to parse the whole response first (ideal case)
             result = JSON.parse(responseText);
         } catch (directParseError) {
-            // Fallback: extract JSON block if there's extra text
             try {
                 const jsonMatch = responseText.match(/\{[\s\S]*\}/);
                 if (jsonMatch) {
@@ -187,7 +281,6 @@ maxAPI.addHandler("chat", async (payloadJson) => {
                 }
             } catch (extractError) {
                 maxAPI.post("Parse error: " + extractError.message);
-                // Return a safe fallback
                 result = {
                     thinking: "Had trouble parsing the response",
                     commands: [],
@@ -196,22 +289,20 @@ maxAPI.addHandler("chat", async (payloadJson) => {
             }
         }
 
-        // Send back to Max
         maxAPI.outlet("response", JSON.stringify(result));
 
     } catch (e) {
         maxAPI.post("Error: " + e.message);
 
-        // Provide user-friendly error messages
         let userMessage;
         const errorLower = e.message.toLowerCase();
 
         if (errorLower.includes("401") || errorLower.includes("invalid") || errorLower.includes("authentication")) {
-            userMessage = "Invalid API key - please check your key in settings";
+            userMessage = "Invalid API key - check your config.json";
         } else if (errorLower.includes("429") || errorLower.includes("rate")) {
-            userMessage = "Rate limited - please wait a moment and try again";
+            userMessage = "Rate limited - wait a moment and try again";
         } else if (errorLower.includes("network") || errorLower.includes("fetch") || errorLower.includes("connect")) {
-            userMessage = "Network error - check your internet connection";
+            userMessage = "Network error - check your connection";
         } else if (errorLower.includes("timeout")) {
             userMessage = "Request timed out - try again";
         } else {
@@ -220,6 +311,52 @@ maxAPI.addHandler("chat", async (payloadJson) => {
 
         maxAPI.outlet("error", userMessage);
     }
+});
+
+// =============================================================================
+// CONFIG HANDLERS
+// =============================================================================
+
+// Create default config (copies from bundled defaults)
+maxAPI.addHandler("createconfig", () => {
+    const result = createDefaultConfig();
+
+    if (result.created) {
+        maxAPI.post("Config created at: " + result.configPath);
+        if (result.backupPath) {
+            maxAPI.post("Previous config backed up to: " + result.backupPath);
+        }
+        maxAPI.outlet("response", JSON.stringify({
+            thinking: "Created default configuration",
+            commands: [],
+            response: `Config created!\n\nEdit your API key in:\n${result.configPath}\n\nThen run /reload to apply changes.`
+        }));
+    } else {
+        maxAPI.outlet("error", "Failed to create config");
+    }
+});
+
+// Reload config
+maxAPI.addHandler("reload", () => {
+    clearClient();
+    currentSkill = null;
+
+    if (initializeFromConfig()) {
+        maxAPI.outlet("response", JSON.stringify({
+            thinking: "Reloaded configuration",
+            commands: [],
+            response: `Reloaded!\n\nProvider: ${getProvider()}\nModel: ${getModel()}`
+        }));
+    }
+});
+
+// Open config directory (outputs path for user to navigate to)
+maxAPI.addHandler("openconfig", () => {
+    maxAPI.outlet("response", JSON.stringify({
+        thinking: "User wants to open config directory",
+        commands: [],
+        response: `Config location:\n${CONFIG_DIR}\n\nFiles:\n• config.json - API keys and settings\n• prompts/system.md - System prompt\n• skills/ - Skill prompts`
+    }));
 });
 
 // =============================================================================
@@ -232,29 +369,22 @@ maxAPI.addHandler("ping", () => {
 });
 
 maxAPI.addHandler("status", () => {
+    const skills = discoverSkills();
     const status = {
-        hasApiKey: isReady(),
+        ready: isReady(),
+        provider: getProvider(),
+        model: getModel(),
         configPath: CONFIG_FILE,
-        sessionsPath: SESSIONS_DIR,
         currentTrack: currentTrackName,
         sessionId: currentSession ? currentSession.id : null,
-        messageCount: currentSession ? getMessageCount(currentSession) : 0
+        messageCount: currentSession ? getMessageCount(currentSession) : 0,
+        activeSkill: currentSkill ? currentSkill.name : null,
+        availableSkills: skills.map(s => s.name)
     };
     maxAPI.post("Status: " + JSON.stringify(status));
 });
 
-// Handler to clear saved API key
-maxAPI.addHandler("clearkey", () => {
-    const config = loadConfig();
-    delete config.apiKey;
-    saveConfig(config);
-    clearClient();
-    maxAPI.post("API key cleared from config");
-    maxAPI.outlet("keycleared");
-});
-
-// Handler to clear conversation and start new session
-// Archives the current session and starts fresh
+// Clear session
 maxAPI.addHandler("clearchat", () => {
     if (currentTrackName) {
         currentSession = clearSession(currentTrackName);
@@ -265,7 +395,6 @@ maxAPI.addHandler("clearchat", () => {
     maxAPI.outlet("chatcleared");
 });
 
-// Alias for clearchat - more intuitive name
 maxAPI.addHandler("newchat", () => {
     if (currentTrackName) {
         currentSession = clearSession(currentTrackName);
@@ -282,9 +411,3 @@ maxAPI.addHandler("newchat", () => {
 // =============================================================================
 
 maxAPI.post("ChatM4L AI module ready");
-if (!isReady()) {
-    maxAPI.post("Waiting for API key...");
-    maxAPI.post("Set once and it will auto-load for all future instances");
-    // Tell bridge to show setup message
-    maxAPI.outlet("needskey");
-}

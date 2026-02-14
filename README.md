@@ -84,6 +84,11 @@ Try:
 │   ├── executor.py        # Commands → Ableton
 │   ├── session_cache.py   # Session state mirror
 │   └── cli.py             # REPL interface
+├── m4l/                   # ChatM4L - Max for Live AI assistant
+│   ├── ChatM4L.amxd       # The device
+│   ├── code/              # Device code
+│   ├── README.md          # ChatM4L documentation
+│   └── BUILD.md           # Build instructions
 ├── docs/
 │   ├── ARCHITECTURE.md    # Vision and roadmap
 │   ├── ROADMAP.md         # Detailed task breakdown
@@ -91,6 +96,18 @@ Try:
 ├── beat-machine/          # Original TR-AIS (drum patterns for TR-8S)
 └── tests/
 ```
+
+## ChatM4L
+
+**[ChatM4L](m4l/README.md)** is a Max for Live device that brings AI directly into Ableton. No external server needed - just drop it on a track and chat.
+
+Features:
+- Context-aware (sees your tracks and plugins)
+- Multi-provider (Anthropic, OpenAI, Ollama)
+- Skills system (specialized modes for drums, mixing, etc.)
+- Session memory (remembers per track)
+
+See [m4l/README.md](m4l/README.md) for details.
 
 ## What's Next
 
@@ -101,6 +118,10 @@ Try:
 ## Origins
 
 This project evolved from TR-AIS, a drum pattern generator for Roland TR-8S. That code is preserved in `beat-machine/`.
+
+The project now has two main components:
+- **TR-AIS CLI** (this README) - Python backend for Ableton control via OSC
+- **ChatM4L** (`m4l/`) - Max for Live device for in-DAW AI chat
 
 ## License
 

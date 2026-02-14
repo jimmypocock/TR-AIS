@@ -1,0 +1,41 @@
+{
+  "_readme": "ChatM4L Config - Edit this file then run /reload in the chat. Config auto-loads when Ableton restarts.",
+
+  "version": 1,
+
+  "providers": {
+    "anthropic": {
+      "apiKey": "YOUR_ANTHROPIC_API_KEY",
+      "models": {
+        "default": "claude-sonnet-4-20250514",
+        "fast": "claude-3-5-haiku-20241022",
+        "powerful": "claude-opus-4-20250514"
+      }
+    },
+    "openai": {
+      "apiKey": "YOUR_OPENAI_API_KEY",
+      "baseUrl": null,
+      "models": {
+        "default": "gpt-4o",
+        "fast": "gpt-4o-mini"
+      }
+    },
+    "ollama": {
+      "apiKey": null,
+      "baseUrl": "http://localhost:11434/v1",
+      "models": {
+        "default": "llama3"
+      }
+    }
+  },
+
+  "activeProvider": "anthropic",
+  "activeModel": "default",
+  "activeSkill": null,
+
+  "settings": {
+    "maxHistory": 20,
+    "sessionGapHours": 4,
+    "maxTokens": 1024
+  }
+}
