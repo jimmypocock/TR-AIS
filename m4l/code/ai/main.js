@@ -1,5 +1,5 @@
 /**
- * ChatM4L AI - node.script code for Max for Live
+ * ChatM4L AI - node.script entry point for Max for Live
  *
  * This script runs in the node.script object and handles:
  * - Claude API calls
@@ -12,131 +12,24 @@
  */
 
 const maxAPI = require("max-api");
-const fs = require("fs");
-const path = require("path");
-const os = require("os");
 
-// Will be set dynamically
-let anthropicClient = null;
-let apiKey = "";
+// Import modules
+const { loadConfig, saveConfig, CONFIG_FILE } = require("./config");
+const { initializeClient, getClient, clearClient, isReady } = require("./client");
+const {
+    getOrCreateSession,
+    addMessage,
+    getMessages,
+    clearSession,
+    getMessageCount,
+    SESSIONS_DIR
+} = require("./sessions");
+const { SYSTEM_PROMPT } = require("./prompt");
+const { handleCommand } = require("./commands");
 
-// Config file location: ~/Library/Application Support/ChatM4L/config.json
-const CONFIG_DIR = path.join(os.homedir(), "Library", "Application Support", "ChatM4L");
-const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
-
-// System prompt for track-scoped AI
-const SYSTEM_PROMPT = `You are ChatM4L, an AI assistant living on a single track in Ableton Live.
-You can only control THIS track - its devices, parameters, and clips.
-You receive context about the track's current state with each message.
-
-IMPORTANT: You must respond with valid JSON only. No markdown, no explanation outside the JSON.
-
-Response format:
-{
-  "thinking": "Your brief reasoning about what the user wants",
-  "commands": [
-    // Array of commands to execute (can be empty)
-  ],
-  "response": "What to tell the user (conversational, brief)"
-}
-
-Available commands:
-
-1. Set a device parameter:
-   { "action": "set_parameter", "device": 0, "param": 3, "value": 0.7 }
-   - device: device index (from context)
-   - param: parameter index (from context)
-   - value: new value (check min/max in context)
-
-2. Set track volume:
-   { "action": "set_volume", "value": 0.8 }
-   - value: 0.0 to 1.0
-
-3. Set track pan:
-   { "action": "set_pan", "value": 0.0 }
-   - value: -1.0 (left) to 1.0 (right)
-
-4. Mute/unmute track:
-   { "action": "set_mute", "value": true }
-
-5. Solo/unsolo track:
-   { "action": "set_solo", "value": true }
-
-6. Add MIDI notes to a clip:
-   { "action": "add_notes", "clip_slot": 0, "length": 4, "notes": [
-     { "pitch": 60, "start_time": 0, "duration": 0.5, "velocity": 100 }
-   ]}
-   - clip_slot: which slot (0-7 typically)
-   - length: clip length in beats (if creating new clip)
-   - notes: array of note objects
-     - pitch: MIDI note (60 = C4)
-     - start_time: in beats from clip start
-     - duration: in beats
-     - velocity: 1-127
-
-7. Clear all notes from a clip:
-   { "action": "clear_clip", "clip_slot": 0 }
-
-8. Fire (play) a clip:
-   { "action": "fire_clip", "clip_slot": 0 }
-
-9. Stop a clip:
-   { "action": "stop_clip", "clip_slot": 0 }
-
-Guidelines:
-- Look at the device parameters in context to find the right one to adjust
-- For "warmer" sounds, typically reduce high frequencies or filter cutoff
-- For "brighter" sounds, increase high frequencies or filter cutoff
-- When adding notes, think musically - use appropriate scales and rhythms
-- Keep responses brief and friendly
-- If you can't do something, explain why
-
-Remember: Only output valid JSON. No other text.`;
-
-// =============================================================================
-// CONFIG FILE MANAGEMENT
-// =============================================================================
-
-function loadConfig() {
-    try {
-        if (fs.existsSync(CONFIG_FILE)) {
-            const data = fs.readFileSync(CONFIG_FILE, "utf8");
-            return JSON.parse(data);
-        }
-    } catch (e) {
-        maxAPI.post("Error loading config: " + e.message);
-    }
-    return {};
-}
-
-function saveConfig(config) {
-    try {
-        // Create directory if it doesn't exist
-        if (!fs.existsSync(CONFIG_DIR)) {
-            fs.mkdirSync(CONFIG_DIR, { recursive: true });
-        }
-        fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
-        maxAPI.post("Config saved to: " + CONFIG_FILE);
-        return true;
-    } catch (e) {
-        maxAPI.post("Error saving config: " + e.message);
-        return false;
-    }
-}
-
-function initializeClient(key) {
-    try {
-        const Anthropic = require("@anthropic-ai/sdk");
-        anthropicClient = new Anthropic({ apiKey: key });
-        apiKey = key;
-        maxAPI.post("Anthropic client initialized");
-        maxAPI.outlet("ready");
-        return true;
-    } catch (e) {
-        maxAPI.post("Error initializing Anthropic client: " + e.message);
-        return false;
-    }
-}
+// Track current session info for status reporting
+let currentTrackName = null;
+let currentSession = null;
 
 // =============================================================================
 // INITIALIZATION
@@ -150,6 +43,7 @@ if (config.apiKey) {
     maxAPI.post("Found saved API key, initializing...");
     if (initializeClient(config.apiKey)) {
         maxAPI.post("Auto-loaded API key from config");
+        maxAPI.outlet("ready");
     }
 } else {
     maxAPI.post("No saved API key found");
@@ -169,10 +63,14 @@ maxAPI.addHandler("apikey", async (key) => {
     }
 
     if (initializeClient(key)) {
+        maxAPI.post("Anthropic client initialized");
+        maxAPI.outlet("ready");
+
         // Save to config file for future instances
         const config = loadConfig();
         config.apiKey = key;
         if (saveConfig(config)) {
+            maxAPI.post("Config saved to: " + CONFIG_FILE);
             maxAPI.post("API key saved - will auto-load next time");
 
             // Verify it was saved correctly
@@ -197,10 +95,9 @@ maxAPI.addHandler("apikey", async (key) => {
 maxAPI.addHandler("chat", async (payloadJson) => {
     maxAPI.post("Chat handler called");
 
-    if (!anthropicClient) {
+    if (!isReady()) {
         maxAPI.post("No client, sending error...");
         maxAPI.outlet("error", "API key not configured");
-        maxAPI.post("Error sent");
         return;
     }
 
@@ -208,47 +105,95 @@ maxAPI.addHandler("chat", async (payloadJson) => {
         const payload = JSON.parse(payloadJson);
         const { message, context } = payload;
 
-        maxAPI.post("Processing: " + message);
+        // Get track name from context (fallback to "unknown" if not provided)
+        const trackName = context.trackName || context.name || "unknown";
 
-        // Build the user message with context
-        const userContent = `Current track state:
-${JSON.stringify(context, null, 2)}
+        // Check if track changed - if so, log it
+        if (currentTrackName && currentTrackName !== trackName) {
+            maxAPI.post("Track changed: " + currentTrackName + " -> " + trackName);
+        }
+        currentTrackName = trackName;
 
-User request: ${message}`;
+        // Handle slash commands (e.g., /newchat, /status, /help)
+        if (message.startsWith("/")) {
+            maxAPI.post("Command detected: " + message);
 
-        // Call Claude
-        const response = await anthropicClient.messages.create({
+            // Build context for command execution
+            const commandContext = {
+                trackName,
+                currentSession,
+                maxAPI,
+                setCurrentSession: (session) => { currentSession = session; }
+            };
+
+            const result = handleCommand(message, commandContext);
+            if (result) {
+                maxAPI.outlet("response", JSON.stringify(result));
+                return;
+            }
+        }
+
+        maxAPI.post("Processing on track '" + trackName + "': " + message);
+
+        // Get or create session for this track (handles rotation automatically)
+        currentSession = getOrCreateSession(trackName);
+
+        // Store ONLY the user's request in session (not the bulky context)
+        addMessage(currentSession, "user", message);
+
+        // Build messages array with context injected into ONLY the latest message
+        const history = getMessages(currentSession);
+        const messagesForClaude = history.map((msg, i) => {
+            // Inject track context only into the most recent user message
+            if (i === history.length - 1 && msg.role === "user") {
+                return {
+                    role: "user",
+                    content: `Current track state:\n${JSON.stringify(context, null, 2)}\n\nUser request: ${msg.content}`
+                };
+            }
+            return msg;
+        });
+
+        maxAPI.post("Sending " + messagesForClaude.length + " messages to Claude (session: " + currentSession.id + ")");
+
+        // Call Claude with conversation history
+        const response = await getClient().messages.create({
             model: "claude-sonnet-4-20250514",
             max_tokens: 1024,
             system: SYSTEM_PROMPT,
-            messages: [{
-                role: "user",
-                content: userContent
-            }]
+            messages: messagesForClaude
         });
 
         // Extract the text response
         const responseText = response.content[0].text;
         maxAPI.post("Raw response: " + responseText.substring(0, 100) + "...");
 
+        // Add assistant response to session (auto-saves to disk)
+        addMessage(currentSession, "assistant", responseText);
+
         // Parse the JSON response
         let result;
         try {
-            // Try to extract JSON if there's extra text
-            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                result = JSON.parse(jsonMatch[0]);
-            } else {
-                throw new Error("No JSON found in response");
+            // Try to parse the whole response first (ideal case)
+            result = JSON.parse(responseText);
+        } catch (directParseError) {
+            // Fallback: extract JSON block if there's extra text
+            try {
+                const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+                if (jsonMatch) {
+                    result = JSON.parse(jsonMatch[0]);
+                } else {
+                    throw new Error("No JSON found in response");
+                }
+            } catch (extractError) {
+                maxAPI.post("Parse error: " + extractError.message);
+                // Return a safe fallback
+                result = {
+                    thinking: "Had trouble parsing the response",
+                    commands: [],
+                    response: responseText.substring(0, 200)
+                };
             }
-        } catch (parseError) {
-            maxAPI.post("Parse error: " + parseError.message);
-            // Return a safe fallback
-            result = {
-                thinking: "Had trouble parsing the response",
-                commands: [],
-                response: responseText.substring(0, 200)
-            };
         }
 
         // Send back to Max
@@ -256,7 +201,24 @@ User request: ${message}`;
 
     } catch (e) {
         maxAPI.post("Error: " + e.message);
-        maxAPI.outlet("error", e.message);
+
+        // Provide user-friendly error messages
+        let userMessage;
+        const errorLower = e.message.toLowerCase();
+
+        if (errorLower.includes("401") || errorLower.includes("invalid") || errorLower.includes("authentication")) {
+            userMessage = "Invalid API key - please check your key in settings";
+        } else if (errorLower.includes("429") || errorLower.includes("rate")) {
+            userMessage = "Rate limited - please wait a moment and try again";
+        } else if (errorLower.includes("network") || errorLower.includes("fetch") || errorLower.includes("connect")) {
+            userMessage = "Network error - check your internet connection";
+        } else if (errorLower.includes("timeout")) {
+            userMessage = "Request timed out - try again";
+        } else {
+            userMessage = "Something went wrong - try again";
+        }
+
+        maxAPI.outlet("error", userMessage);
     }
 });
 
@@ -271,9 +233,12 @@ maxAPI.addHandler("ping", () => {
 
 maxAPI.addHandler("status", () => {
     const status = {
-        hasApiKey: !!apiKey,
-        hasClient: !!anthropicClient,
-        configPath: CONFIG_FILE
+        hasApiKey: isReady(),
+        configPath: CONFIG_FILE,
+        sessionsPath: SESSIONS_DIR,
+        currentTrack: currentTrackName,
+        sessionId: currentSession ? currentSession.id : null,
+        messageCount: currentSession ? getMessageCount(currentSession) : 0
     };
     maxAPI.post("Status: " + JSON.stringify(status));
 });
@@ -283,10 +248,33 @@ maxAPI.addHandler("clearkey", () => {
     const config = loadConfig();
     delete config.apiKey;
     saveConfig(config);
-    apiKey = "";
-    anthropicClient = null;
+    clearClient();
     maxAPI.post("API key cleared from config");
     maxAPI.outlet("keycleared");
+});
+
+// Handler to clear conversation and start new session
+// Archives the current session and starts fresh
+maxAPI.addHandler("clearchat", () => {
+    if (currentTrackName) {
+        currentSession = clearSession(currentTrackName);
+        maxAPI.post("Session archived and cleared for track: " + currentTrackName);
+    } else {
+        maxAPI.post("No active session to clear");
+    }
+    maxAPI.outlet("chatcleared");
+});
+
+// Alias for clearchat - more intuitive name
+maxAPI.addHandler("newchat", () => {
+    if (currentTrackName) {
+        currentSession = clearSession(currentTrackName);
+        maxAPI.post("New session started for track: " + currentTrackName);
+        maxAPI.outlet("newchat", currentSession.id);
+    } else {
+        maxAPI.post("Send a message first to establish track context");
+        maxAPI.outlet("error", "No track context - send a message first");
+    }
 });
 
 // =============================================================================
@@ -294,7 +282,7 @@ maxAPI.addHandler("clearkey", () => {
 // =============================================================================
 
 maxAPI.post("ChatM4L AI module ready");
-if (!anthropicClient) {
+if (!isReady()) {
     maxAPI.post("Waiting for API key...");
     maxAPI.post("Set once and it will auto-load for all future instances");
     // Tell bridge to show setup message
