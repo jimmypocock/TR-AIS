@@ -1,34 +1,35 @@
 /**
- * /status command - Show current session info
+ * /status command - Show current session and config info
  */
 
 const { getMessageCount } = require("../sessions");
+const { discoverSkills } = require("../config");
+const { getProvider, getModel, isReady } = require("../client");
 
 module.exports = {
     name: "status",
     aliases: [],
-    description: "Show current session info",
+    description: "Show current session and config info",
 
     execute(args, context) {
-        const { trackName, currentSession } = context;
+        const { trackName, currentSession, currentSkill } = context;
+        const skills = discoverSkills();
 
-        const status = {
-            track: trackName,
-            sessionId: currentSession ? currentSession.id : "none",
-            messageCount: currentSession ? getMessageCount(currentSession) : 0,
-            provider: "anthropic",
-            model: "claude-sonnet-4-20250514"
-        };
+        const lines = [
+            `**Status**`,
+            ``,
+            `**AI:** ${isReady() ? `${getProvider()} / ${getModel()}` : "Not configured"}`,
+            `**Track:** ${trackName || "none"}`,
+            `**Session:** ${currentSession ? currentSession.id : "none"}`,
+            `**Messages:** ${currentSession ? getMessageCount(currentSession) : 0}`,
+            `**Active Skill:** ${currentSkill ? currentSkill.title : "none"}`,
+            `**Available Skills:** ${skills.length > 0 ? skills.map(s => s.name).join(", ") : "none"}`
+        ];
 
         return {
-            thinking: "User requested status info",
+            thinking: "Showing status info",
             commands: [],
-            response: [
-                `**Track:** ${status.track}`,
-                `**Session:** ${status.sessionId}`,
-                `**Messages:** ${status.messageCount}`,
-                `**Model:** ${status.model}`
-            ].join("\n")
+            response: lines.join("\n")
         };
     }
 };

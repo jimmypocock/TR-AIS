@@ -2,6 +2,8 @@
  * /help command - Show available commands
  */
 
+const { discoverSkills } = require("../config");
+
 module.exports = {
     name: "help",
     aliases: ["?"],
@@ -20,10 +22,16 @@ module.exports = {
             })
             .join("\n");
 
+        // Get available skills
+        const skills = discoverSkills();
+        const skillTip = skills.length > 0
+            ? `\n\n**Skills:** ${skills.map(s => `/${s.name}`).join(", ")}\nActivate with /<skill-name> or /skills to see all.`
+            : "";
+
         return {
             thinking: "User requested help",
             commands: [],
-            response: `**Available Commands:**\n${commandList}\n\nOr just chat naturally about your track!`
+            response: `**Commands:**\n${commandList}${skillTip}\n\nOr just chat naturally about your track!`
         };
     }
 };
