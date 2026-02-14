@@ -1,5 +1,5 @@
 /**
- * ChatM4L AI - node.script code for Max for Live
+ * ChatM4L AI - node.script entry point for Max for Live
  *
  * This script runs in the node.script object and handles:
  * - Claude API calls
@@ -12,131 +12,12 @@
  */
 
 const maxAPI = require("max-api");
-const fs = require("fs");
-const path = require("path");
-const os = require("os");
 
-// Will be set dynamically
-let anthropicClient = null;
-let apiKey = "";
-
-// Config file location: ~/Library/Application Support/ChatM4L/config.json
-const CONFIG_DIR = path.join(os.homedir(), "Library", "Application Support", "ChatM4L");
-const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
-
-// System prompt for track-scoped AI
-const SYSTEM_PROMPT = `You are ChatM4L, an AI assistant living on a single track in Ableton Live.
-You can only control THIS track - its devices, parameters, and clips.
-You receive context about the track's current state with each message.
-
-IMPORTANT: You must respond with valid JSON only. No markdown, no explanation outside the JSON.
-
-Response format:
-{
-  "thinking": "Your brief reasoning about what the user wants",
-  "commands": [
-    // Array of commands to execute (can be empty)
-  ],
-  "response": "What to tell the user (conversational, brief)"
-}
-
-Available commands:
-
-1. Set a device parameter:
-   { "action": "set_parameter", "device": 0, "param": 3, "value": 0.7 }
-   - device: device index (from context)
-   - param: parameter index (from context)
-   - value: new value (check min/max in context)
-
-2. Set track volume:
-   { "action": "set_volume", "value": 0.8 }
-   - value: 0.0 to 1.0
-
-3. Set track pan:
-   { "action": "set_pan", "value": 0.0 }
-   - value: -1.0 (left) to 1.0 (right)
-
-4. Mute/unmute track:
-   { "action": "set_mute", "value": true }
-
-5. Solo/unsolo track:
-   { "action": "set_solo", "value": true }
-
-6. Add MIDI notes to a clip:
-   { "action": "add_notes", "clip_slot": 0, "length": 4, "notes": [
-     { "pitch": 60, "start_time": 0, "duration": 0.5, "velocity": 100 }
-   ]}
-   - clip_slot: which slot (0-7 typically)
-   - length: clip length in beats (if creating new clip)
-   - notes: array of note objects
-     - pitch: MIDI note (60 = C4)
-     - start_time: in beats from clip start
-     - duration: in beats
-     - velocity: 1-127
-
-7. Clear all notes from a clip:
-   { "action": "clear_clip", "clip_slot": 0 }
-
-8. Fire (play) a clip:
-   { "action": "fire_clip", "clip_slot": 0 }
-
-9. Stop a clip:
-   { "action": "stop_clip", "clip_slot": 0 }
-
-Guidelines:
-- Look at the device parameters in context to find the right one to adjust
-- For "warmer" sounds, typically reduce high frequencies or filter cutoff
-- For "brighter" sounds, increase high frequencies or filter cutoff
-- When adding notes, think musically - use appropriate scales and rhythms
-- Keep responses brief and friendly
-- If you can't do something, explain why
-
-Remember: Only output valid JSON. No other text.`;
-
-// =============================================================================
-// CONFIG FILE MANAGEMENT
-// =============================================================================
-
-function loadConfig() {
-    try {
-        if (fs.existsSync(CONFIG_FILE)) {
-            const data = fs.readFileSync(CONFIG_FILE, "utf8");
-            return JSON.parse(data);
-        }
-    } catch (e) {
-        maxAPI.post("Error loading config: " + e.message);
-    }
-    return {};
-}
-
-function saveConfig(config) {
-    try {
-        // Create directory if it doesn't exist
-        if (!fs.existsSync(CONFIG_DIR)) {
-            fs.mkdirSync(CONFIG_DIR, { recursive: true });
-        }
-        fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
-        maxAPI.post("Config saved to: " + CONFIG_FILE);
-        return true;
-    } catch (e) {
-        maxAPI.post("Error saving config: " + e.message);
-        return false;
-    }
-}
-
-function initializeClient(key) {
-    try {
-        const Anthropic = require("@anthropic-ai/sdk");
-        anthropicClient = new Anthropic({ apiKey: key });
-        apiKey = key;
-        maxAPI.post("Anthropic client initialized");
-        maxAPI.outlet("ready");
-        return true;
-    } catch (e) {
-        maxAPI.post("Error initializing Anthropic client: " + e.message);
-        return false;
-    }
-}
+// Import modules
+const { loadConfig, saveConfig, CONFIG_FILE } = require("./config");
+const { initializeClient, getClient, clearClient, isReady } = require("./client");
+const { addMessage, getMessages, clear: clearConversation, getLength } = require("./conversation");
+const { SYSTEM_PROMPT } = require("./prompt");
 
 // =============================================================================
 // INITIALIZATION
@@ -150,6 +31,7 @@ if (config.apiKey) {
     maxAPI.post("Found saved API key, initializing...");
     if (initializeClient(config.apiKey)) {
         maxAPI.post("Auto-loaded API key from config");
+        maxAPI.outlet("ready");
     }
 } else {
     maxAPI.post("No saved API key found");
@@ -169,10 +51,14 @@ maxAPI.addHandler("apikey", async (key) => {
     }
 
     if (initializeClient(key)) {
+        maxAPI.post("Anthropic client initialized");
+        maxAPI.outlet("ready");
+
         // Save to config file for future instances
         const config = loadConfig();
         config.apiKey = key;
         if (saveConfig(config)) {
+            maxAPI.post("Config saved to: " + CONFIG_FILE);
             maxAPI.post("API key saved - will auto-load next time");
 
             // Verify it was saved correctly
@@ -197,10 +83,9 @@ maxAPI.addHandler("apikey", async (key) => {
 maxAPI.addHandler("chat", async (payloadJson) => {
     maxAPI.post("Chat handler called");
 
-    if (!anthropicClient) {
+    if (!isReady()) {
         maxAPI.post("No client, sending error...");
         maxAPI.outlet("error", "API key not configured");
-        maxAPI.post("Error sent");
         return;
     }
 
@@ -216,20 +101,28 @@ ${JSON.stringify(context, null, 2)}
 
 User request: ${message}`;
 
-        // Call Claude
-        const response = await anthropicClient.messages.create({
+        // Add user message to conversation history
+        addMessage("user", userContent);
+
+        // Get full conversation history for Claude
+        const messages = getMessages();
+
+        maxAPI.post("Sending " + messages.length + " messages to Claude");
+
+        // Call Claude with full conversation history
+        const response = await getClient().messages.create({
             model: "claude-sonnet-4-20250514",
             max_tokens: 1024,
             system: SYSTEM_PROMPT,
-            messages: [{
-                role: "user",
-                content: userContent
-            }]
+            messages: messages
         });
 
         // Extract the text response
         const responseText = response.content[0].text;
         maxAPI.post("Raw response: " + responseText.substring(0, 100) + "...");
+
+        // Add assistant response to conversation history
+        addMessage("assistant", responseText);
 
         // Parse the JSON response
         let result;
@@ -271,9 +164,9 @@ maxAPI.addHandler("ping", () => {
 
 maxAPI.addHandler("status", () => {
     const status = {
-        hasApiKey: !!apiKey,
-        hasClient: !!anthropicClient,
-        configPath: CONFIG_FILE
+        hasApiKey: isReady(),
+        configPath: CONFIG_FILE,
+        conversationLength: getLength()
     };
     maxAPI.post("Status: " + JSON.stringify(status));
 });
@@ -283,10 +176,16 @@ maxAPI.addHandler("clearkey", () => {
     const config = loadConfig();
     delete config.apiKey;
     saveConfig(config);
-    apiKey = "";
-    anthropicClient = null;
+    clearClient();
     maxAPI.post("API key cleared from config");
     maxAPI.outlet("keycleared");
+});
+
+// Handler to clear conversation history
+maxAPI.addHandler("clearchat", () => {
+    clearConversation();
+    maxAPI.post("Conversation history cleared");
+    maxAPI.outlet("chatcleared");
 });
 
 // =============================================================================
@@ -294,7 +193,7 @@ maxAPI.addHandler("clearkey", () => {
 // =============================================================================
 
 maxAPI.post("ChatM4L AI module ready");
-if (!anthropicClient) {
+if (!isReady()) {
     maxAPI.post("Waiting for API key...");
     maxAPI.post("Set once and it will auto-load for all future instances");
     // Tell bridge to show setup message
