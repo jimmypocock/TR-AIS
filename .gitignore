@@ -42,3 +42,6 @@ sessions.json
 
 # Claude
 .claude/
+
+# Node
+node_modules/

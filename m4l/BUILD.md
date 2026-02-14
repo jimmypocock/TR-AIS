@@ -34,8 +34,10 @@ The `@autowatch 1` flag reloads the script when the file changes (useful for dev
 ## Step 4: Add the node.script Object (AI)
 
 1. Press **N** to create a new object
-2. Type: `node.script ai/main.js @autowatch 1`
+2. Type: `node.script ai/main.js`
 3. Place it below the v8 object
+
+Note: Unlike v8, node.script doesn't support `@autowatch`. To reload during development, send it a `script reload` message.
 
 ## Step 5: Copy the Code Files
 
@@ -56,7 +58,7 @@ The v8 and node.script objects need to find their JavaScript files.
 
 3. In Max, update the object paths if needed:
    - `v8 code/bridge.js @autowatch 1`
-   - `node.script code/ai/main.js @autowatch 1`
+   - `node.script code/ai/main.js`
 
 ## Step 6: Install npm Dependencies
 
