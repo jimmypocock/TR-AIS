@@ -4,8 +4,8 @@
 
 module.exports = {
     name: "reload",
-    aliases: [],
-    description: "Reload config and reinitialize AI client",
+    aliases: ["reloadconfig"],
+    description: "Reload config after editing (auto-loads on Ableton restart)",
 
     execute(args, context) {
         // Note: This command is handled directly in main.js

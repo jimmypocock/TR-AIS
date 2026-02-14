@@ -1,4 +1,6 @@
 {
+  "_readme": "ChatM4L Config - Edit this file then run /reload in the chat. Config auto-loads when Ableton restarts.",
+
   "version": 1,
 
   "providers": {

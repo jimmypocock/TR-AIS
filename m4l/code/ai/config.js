@@ -161,6 +161,13 @@ function createDefaultConfig() {
         fs.copyFileSync(defaultConfig, CONFIG_FILE);
     }
 
+    // Copy README.md
+    const defaultReadme = path.join(DEFAULTS_DIR, "README.md");
+    const readmeDest = path.join(CONFIG_DIR, "README.md");
+    if (fs.existsSync(defaultReadme)) {
+        fs.copyFileSync(defaultReadme, readmeDest);
+    }
+
     // Copy default prompts
     const defaultPrompts = path.join(DEFAULTS_DIR, "prompts");
     if (fs.existsSync(defaultPrompts)) {

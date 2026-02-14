@@ -6,8 +6,8 @@ const { createDefaultConfig } = require("../config");
 
 module.exports = {
     name: "createconfig",
-    aliases: ["initconfig", "resetconfig"],
-    description: "Create or reset config from defaults",
+    aliases: ["initconfig", "resetconfig", "configreset"],
+    description: "Create or reset config from defaults (backs up existing)",
 
     execute(args, context) {
         const { maxAPI } = context;
