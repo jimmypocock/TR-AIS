@@ -1,5 +1,5 @@
 /**
- * TR-AIS AI - node.script code for Max for Live
+ * ChatM4L AI - node.script code for Max for Live
  *
  * This script runs in the node.script object and handles:
  * - Claude API calls
@@ -12,13 +12,20 @@
  */
 
 const maxAPI = require("max-api");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
 
 // Will be set dynamically
 let anthropicClient = null;
 let apiKey = "";
 
+// Config file location: ~/Library/Application Support/ChatM4L/config.json
+const CONFIG_DIR = path.join(os.homedir(), "Library", "Application Support", "ChatM4L");
+const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
+
 // System prompt for track-scoped AI
-const SYSTEM_PROMPT = `You are TR-AIS, an AI assistant living on a single track in Ableton Live.
+const SYSTEM_PROMPT = `You are ChatM4L, an AI assistant living on a single track in Ableton Live.
 You can only control THIS track - its devices, parameters, and clips.
 You receive context about the track's current state with each message.
 
@@ -87,27 +94,99 @@ Guidelines:
 Remember: Only output valid JSON. No other text.`;
 
 // =============================================================================
+// CONFIG FILE MANAGEMENT
+// =============================================================================
+
+function loadConfig() {
+    try {
+        if (fs.existsSync(CONFIG_FILE)) {
+            const data = fs.readFileSync(CONFIG_FILE, "utf8");
+            return JSON.parse(data);
+        }
+    } catch (e) {
+        maxAPI.post("Error loading config: " + e.message);
+    }
+    return {};
+}
+
+function saveConfig(config) {
+    try {
+        // Create directory if it doesn't exist
+        if (!fs.existsSync(CONFIG_DIR)) {
+            fs.mkdirSync(CONFIG_DIR, { recursive: true });
+        }
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+        maxAPI.post("Config saved to: " + CONFIG_FILE);
+        return true;
+    } catch (e) {
+        maxAPI.post("Error saving config: " + e.message);
+        return false;
+    }
+}
+
+function initializeClient(key) {
+    try {
+        const Anthropic = require("@anthropic-ai/sdk");
+        anthropicClient = new Anthropic({ apiKey: key });
+        apiKey = key;
+        maxAPI.post("Anthropic client initialized");
+        maxAPI.outlet("ready");
+        return true;
+    } catch (e) {
+        maxAPI.post("Error initializing Anthropic client: " + e.message);
+        return false;
+    }
+}
+
+// =============================================================================
 // INITIALIZATION
 // =============================================================================
 
-maxAPI.post("TR-AIS AI module loading...");
+maxAPI.post("ChatM4L AI module loading...");
+
+// Try to load API key from config on startup
+const config = loadConfig();
+if (config.apiKey) {
+    maxAPI.post("Found saved API key, initializing...");
+    if (initializeClient(config.apiKey)) {
+        maxAPI.post("Auto-loaded API key from config");
+    }
+} else {
+    maxAPI.post("No saved API key found");
+}
 
 // =============================================================================
 // API KEY HANDLING
 // =============================================================================
 
 maxAPI.addHandler("apikey", async (key) => {
-    apiKey = key;
     maxAPI.post("API key received");
 
-    try {
-        // Dynamically import the Anthropic SDK
-        const Anthropic = require("@anthropic-ai/sdk");
-        anthropicClient = new Anthropic({ apiKey: key });
-        maxAPI.post("Anthropic client initialized");
-    } catch (e) {
-        maxAPI.post("Error initializing Anthropic client: " + e.message);
-        maxAPI.outlet("error", "Failed to initialize AI: " + e.message);
+    // Validate key isn't empty
+    if (!key || key.trim() === "") {
+        maxAPI.outlet("error", "API key cannot be empty");
+        return;
+    }
+
+    if (initializeClient(key)) {
+        // Save to config file for future instances
+        const config = loadConfig();
+        config.apiKey = key;
+        if (saveConfig(config)) {
+            maxAPI.post("API key saved - will auto-load next time");
+
+            // Verify it was saved correctly
+            const verifyConfig = loadConfig();
+            if (verifyConfig.apiKey === key) {
+                maxAPI.outlet("keysaved");
+            } else {
+                maxAPI.outlet("error", "Failed to verify saved key");
+            }
+        } else {
+            maxAPI.outlet("error", "Failed to save API key");
+        }
+    } else {
+        maxAPI.outlet("error", "Failed to initialize AI");
     }
 });
 
@@ -116,8 +195,12 @@ maxAPI.addHandler("apikey", async (key) => {
 // =============================================================================
 
 maxAPI.addHandler("chat", async (payloadJson) => {
+    maxAPI.post("Chat handler called");
+
     if (!anthropicClient) {
+        maxAPI.post("No client, sending error...");
         maxAPI.outlet("error", "API key not configured");
+        maxAPI.post("Error sent");
         return;
     }
 
@@ -189,14 +272,31 @@ maxAPI.addHandler("ping", () => {
 maxAPI.addHandler("status", () => {
     const status = {
         hasApiKey: !!apiKey,
-        hasClient: !!anthropicClient
+        hasClient: !!anthropicClient,
+        configPath: CONFIG_FILE
     };
     maxAPI.post("Status: " + JSON.stringify(status));
+});
+
+// Handler to clear saved API key
+maxAPI.addHandler("clearkey", () => {
+    const config = loadConfig();
+    delete config.apiKey;
+    saveConfig(config);
+    apiKey = "";
+    anthropicClient = null;
+    maxAPI.post("API key cleared from config");
+    maxAPI.outlet("keycleared");
 });
 
 // =============================================================================
 // READY
 // =============================================================================
 
-maxAPI.post("TR-AIS AI module ready");
-maxAPI.post("Waiting for API key...");
+maxAPI.post("ChatM4L AI module ready");
+if (!anthropicClient) {
+    maxAPI.post("Waiting for API key...");
+    maxAPI.post("Set once and it will auto-load for all future instances");
+    // Tell bridge to show setup message
+    maxAPI.outlet("needskey");
+}
