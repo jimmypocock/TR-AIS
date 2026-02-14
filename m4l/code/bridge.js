@@ -1,5 +1,5 @@
 /**
- * TR-AIS Bridge - v8 object code for Max for Live
+ * ChatM4L Bridge - v8 object code for Max for Live
  *
  * This script runs in the v8 object and bridges between:
  * - The Max UI (textedit, buttons)
@@ -17,12 +17,11 @@
 
 // Max boilerplate
 inlets = 1;
-outlets = 3;
+outlets = 2;
 
 // Outlet indices
 const OUT_NODE = 0;      // To node.script
 const OUT_HISTORY = 1;   // To chat history textedit
-const OUT_STATUS = 2;    // To status display
 
 // Chat history buffer
 let chatHistory = [];
@@ -36,10 +35,17 @@ let apiKey = "";
 
 function bang() {
     // Called when device loads (triggered by live.thisdevice)
-    post("TR-AIS Bridge initialized\n");
+    post("ChatM4L Bridge initialized\n");
     updateStatus("Ready");
 
     // Get initial track context to verify we're working
+    // Check if Live API is available (won't be during save)
+    const track = new LiveAPI("this_device canonical_parent");
+    if (!track.id) {
+        post("Live API not ready (this is normal during save)\n");
+        return;
+    }
+
     const context = getTrackContext();
     post("Track: " + context.name + "\n");
     post("Devices: " + context.devices.length + "\n");
@@ -51,10 +57,10 @@ function bang() {
 
 function setApiKey(key) {
     apiKey = key;
-    // Send to node.script
+    // Send to node.script (it will save to config file)
     outlet(OUT_NODE, "apikey", key);
-    updateStatus("API key set");
-    post("API key configured\n");
+    updateStatus("Saving key...");
+    post("API key sent to node.script\n");
 }
 
 function getApiKey() {
@@ -71,10 +77,8 @@ function chat(userMessage) {
         return;
     }
 
-    if (!apiKey) {
-        addToHistory("System", "Please set your API key first (click Settings)");
-        return;
-    }
+    // Note: apiKey may be auto-loaded in node.script from config
+    // So we check if node.script is ready by trying to send
 
     // Add user message to history
     addToHistory("You", userMessage);
@@ -118,11 +122,46 @@ function response(jsonString) {
     }
 }
 
-function error(message) {
+function error() {
     // Called when node.script reports an error
+    // Arguments may be split by spaces, so rejoin them
+    var message = Array.prototype.slice.call(arguments).join(" ");
     post("AI Error: " + message + "\n");
-    addToHistory("System", "Error: " + message);
-    updateStatus("Error");
+
+    // Give helpful message for common errors
+    if (message === "API key not configured") {
+        addToHistory("System", "No API key set. Please click Settings (⚙) to configure.");
+        updateStatus("Setup Required");
+    } else {
+        addToHistory("System", "Error: " + message);
+        updateStatus("Error");
+    }
+}
+
+function ready() {
+    // Called when node.script has a valid API key (auto-loaded or just set)
+    post("AI ready with API key\n");
+    updateStatus("Ready");
+}
+
+function keycleared() {
+    // Called when API key is cleared from config
+    post("API key cleared\n");
+    updateStatus("No API Key");
+    addToHistory("System", "API key cleared. Enter a new key to continue.");
+}
+
+function needskey() {
+    // Called when node.script starts without a saved API key
+    post("No API key configured\n");
+    updateStatus("Setup Required");
+    addToHistory("System", "Welcome! Please click Settings (⚙) to enter your Anthropic API key.");
+}
+
+function keysaved() {
+    // Called when API key is successfully saved and verified
+    post("API key saved and verified\n");
+    addToHistory("System", "API Key Saved!");
 }
 
 // =============================================================================
@@ -131,6 +170,21 @@ function error(message) {
 
 function getTrackContext() {
     const track = new LiveAPI("this_device canonical_parent");
+
+    // Return empty context if Live API not available
+    if (!track.id) {
+        return {
+            name: "Unknown",
+            color: 0,
+            volume: 0,
+            pan: 0,
+            muted: false,
+            soloed: false,
+            armed: false,
+            devices: [],
+            clipSlots: []
+        };
+    }
 
     const context = {
         name: track.get("name").toString(),
@@ -171,7 +225,7 @@ function getDevices() {
         const className = device.get("class_name").toString();
 
         // Skip our own device
-        if (className === "MaxForLive" || name === "TR-AIS") {
+        if (className === "MaxForLive" || name === "ChatM4L") {
             continue;
         }
 
@@ -385,7 +439,10 @@ function addToHistory(sender, message) {
 }
 
 function updateStatus(status) {
-    outlet(OUT_STATUS, "set", status);
+    // Show status in chat history (skip "Ready" to reduce noise)
+    if (status !== "Ready") {
+        addToHistory("System", status);
+    }
 }
 
 function clearHistory() {

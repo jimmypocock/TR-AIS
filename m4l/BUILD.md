@@ -243,6 +243,17 @@ This installs `@anthropic-ai/sdk` into `code/ai/node_modules/`.
 5. Watch the Max Console for debug output
 6. The response should appear in chat history
 
+## API Key Persistence
+
+The API key is **automatically saved** to a config file when you first set it:
+- Location: `~/Library/Application Support/TR-AIS/config.json`
+- All future device instances will auto-load this key
+- No need to enter it again!
+
+To clear the saved key (e.g., to use a different one):
+1. Send `clearkey` message to the node.script object, OR
+2. Delete the config file manually
+
 ## Step 11: Save and Close
 
 1. Save the device (Cmd+S)
@@ -252,8 +263,10 @@ This installs `@anthropic-ai/sdk` into `code/ai/node_modules/`.
 ## Troubleshooting
 
 ### "API key not configured"
-- Make sure you clicked "Set Key" after entering your key
-- Check Max Console for errors
+- If this is your first time, enter your key and click "Set Key"
+- If you've used it before, the key should auto-load from config
+- Check Max Console for "Auto-loaded API key" or "No saved API key found"
+- Check that `~/Library/Application Support/TR-AIS/config.json` exists and contains your key
 
 ### node.script errors
 - Make sure npm packages are installed
