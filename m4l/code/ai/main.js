@@ -127,21 +127,26 @@ User request: ${message}`;
         // Parse the JSON response
         let result;
         try {
-            // Try to extract JSON if there's extra text
-            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                result = JSON.parse(jsonMatch[0]);
-            } else {
-                throw new Error("No JSON found in response");
+            // Try to parse the whole response first (ideal case)
+            result = JSON.parse(responseText);
+        } catch (directParseError) {
+            // Fallback: extract JSON block if there's extra text
+            try {
+                const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+                if (jsonMatch) {
+                    result = JSON.parse(jsonMatch[0]);
+                } else {
+                    throw new Error("No JSON found in response");
+                }
+            } catch (extractError) {
+                maxAPI.post("Parse error: " + extractError.message);
+                // Return a safe fallback
+                result = {
+                    thinking: "Had trouble parsing the response",
+                    commands: [],
+                    response: responseText.substring(0, 200)
+                };
             }
-        } catch (parseError) {
-            maxAPI.post("Parse error: " + parseError.message);
-            // Return a safe fallback
-            result = {
-                thinking: "Had trouble parsing the response",
-                commands: [],
-                response: responseText.substring(0, 200)
-            };
         }
 
         // Send back to Max
@@ -149,7 +154,24 @@ User request: ${message}`;
 
     } catch (e) {
         maxAPI.post("Error: " + e.message);
-        maxAPI.outlet("error", e.message);
+
+        // Provide user-friendly error messages
+        let userMessage;
+        const errorLower = e.message.toLowerCase();
+
+        if (errorLower.includes("401") || errorLower.includes("invalid") || errorLower.includes("authentication")) {
+            userMessage = "Invalid API key - please check your key in settings";
+        } else if (errorLower.includes("429") || errorLower.includes("rate")) {
+            userMessage = "Rate limited - please wait a moment and try again";
+        } else if (errorLower.includes("network") || errorLower.includes("fetch") || errorLower.includes("connect")) {
+            userMessage = "Network error - check your internet connection";
+        } else if (errorLower.includes("timeout")) {
+            userMessage = "Request timed out - try again";
+        } else {
+            userMessage = "Something went wrong - try again";
+        }
+
+        maxAPI.outlet("error", userMessage);
     }
 });
 
