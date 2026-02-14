@@ -14,7 +14,7 @@ const os = require("os");
 // User config location: ~/Library/Application Support/ChatM4L/
 const CONFIG_DIR = path.join(os.homedir(), "Library", "Application Support", "ChatM4L");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
-const PROMPTS_DIR = path.join(CONFIG_DIR, "prompts");
+const CORE_DIR = path.join(CONFIG_DIR, "core");
 const SKILLS_DIR = path.join(CONFIG_DIR, "skills");
 const SESSIONS_DIR = path.join(CONFIG_DIR, "sessions");
 
@@ -29,7 +29,7 @@ const DEFAULTS_DIR = path.join(__dirname, "defaults");
  * Ensure all required directories exist
  */
 function ensureDirectories() {
-    const dirs = [CONFIG_DIR, PROMPTS_DIR, SKILLS_DIR, SESSIONS_DIR];
+    const dirs = [CONFIG_DIR, CORE_DIR, SKILLS_DIR, SESSIONS_DIR];
     for (const dir of dirs) {
         if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
@@ -168,10 +168,10 @@ function createDefaultConfig() {
         fs.copyFileSync(defaultReadme, readmeDest);
     }
 
-    // Copy default prompts
-    const defaultPrompts = path.join(DEFAULTS_DIR, "prompts");
-    if (fs.existsSync(defaultPrompts)) {
-        copyDirSync(defaultPrompts, PROMPTS_DIR);
+    // Copy default core (system.md, user.md)
+    const defaultCore = path.join(DEFAULTS_DIR, "core");
+    if (fs.existsSync(defaultCore)) {
+        copyDirSync(defaultCore, CORE_DIR);
     }
 
     // Copy default skills
@@ -192,10 +192,10 @@ function createDefaultConfig() {
 // =============================================================================
 
 /**
- * Load the main system prompt from prompts/system.md
+ * Load the main system prompt from core/system.md
  */
 function loadSystemPrompt() {
-    const promptPath = path.join(PROMPTS_DIR, "system.md");
+    const promptPath = path.join(CORE_DIR, "system.md");
 
     try {
         if (fs.existsSync(promptPath)) {
@@ -206,7 +206,7 @@ function loadSystemPrompt() {
     }
 
     // Fallback to bundled default
-    const defaultPath = path.join(DEFAULTS_DIR, "prompts", "system.md");
+    const defaultPath = path.join(DEFAULTS_DIR, "core", "system.md");
     try {
         if (fs.existsSync(defaultPath)) {
             return fs.readFileSync(defaultPath, "utf8");
@@ -218,13 +218,38 @@ function loadSystemPrompt() {
     return "You are ChatM4L, an AI assistant for Ableton Live.";
 }
 
+/**
+ * Load user profile from core/user.md
+ * Returns null if not configured (still has template comments)
+ */
+function loadUserProfile() {
+    const userPath = path.join(CORE_DIR, "user.md");
+
+    try {
+        if (fs.existsSync(userPath)) {
+            const content = fs.readFileSync(userPath, "utf8");
+
+            // Check if it's still the template (has HTML comments)
+            if (content.includes("<!-- Delete these comments")) {
+                return null;
+            }
+
+            return content;
+        }
+    } catch (e) {
+        console.error("Error loading user profile:", e.message);
+    }
+
+    return null;
+}
+
 // =============================================================================
 // SKILLS MANAGEMENT
 // =============================================================================
 
 /**
  * Discover all skills in the skills directory
- * Returns array of { name, path, prompt }
+ * Returns array of { name, title, prompt }
  */
 function discoverSkills() {
     const skills = [];
@@ -235,25 +260,22 @@ function discoverSkills() {
         const entries = fs.readdirSync(SKILLS_DIR, { withFileTypes: true });
 
         for (const entry of entries) {
-            if (!entry.isDirectory()) continue;
+            // Only process .md files
+            if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
 
             const skillPath = path.join(SKILLS_DIR, entry.name);
-            const skillFile = path.join(skillPath, "SKILL.md");
+            const skillName = entry.name.replace(".md", "");
+            const prompt = fs.readFileSync(skillPath, "utf8");
 
-            if (fs.existsSync(skillFile)) {
-                const prompt = fs.readFileSync(skillFile, "utf8");
+            // Extract title from first heading
+            const titleMatch = prompt.match(/^#\s+(.+)/m);
+            const title = titleMatch ? titleMatch[1] : skillName;
 
-                // Extract title from first heading
-                const titleMatch = prompt.match(/^#\s+(.+)/m);
-                const title = titleMatch ? titleMatch[1] : entry.name;
-
-                skills.push({
-                    name: entry.name,
-                    title,
-                    path: skillPath,
-                    prompt
-                });
-            }
+            skills.push({
+                name: skillName,
+                title,
+                prompt
+            });
         }
     } catch (e) {
         console.error("Error discovering skills:", e.message);
@@ -266,7 +288,7 @@ function discoverSkills() {
  * Load a specific skill by name
  */
 function loadSkill(skillName) {
-    const skillPath = path.join(SKILLS_DIR, skillName, "SKILL.md");
+    const skillPath = path.join(SKILLS_DIR, skillName + ".md");
 
     try {
         if (fs.existsSync(skillPath)) {
@@ -294,7 +316,7 @@ module.exports = {
     // Paths
     CONFIG_DIR,
     CONFIG_FILE,
-    PROMPTS_DIR,
+    CORE_DIR,
     SKILLS_DIR,
     SESSIONS_DIR,
     DEFAULTS_DIR,
@@ -309,8 +331,9 @@ module.exports = {
     createDefaultConfig,
     ensureDirectories,
 
-    // Prompts
+    // Core prompts
     loadSystemPrompt,
+    loadUserProfile,
 
     // Skills
     discoverSkills,

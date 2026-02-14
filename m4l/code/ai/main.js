@@ -22,6 +22,7 @@ const {
     getActiveModel,
     createDefaultConfig,
     loadSystemPrompt,
+    loadUserProfile,
     discoverSkills,
     loadSkill,
     CONFIG_FILE,
@@ -56,6 +57,7 @@ let currentTrackName = null;
 let currentSession = null;
 let currentSkill = null;
 let systemPrompt = null;
+let userProfile = null;
 let appConfig = null;
 
 // =============================================================================
@@ -106,6 +108,14 @@ function initializeFromConfig() {
         systemPrompt = loadSystemPrompt();
         maxAPI.post("System prompt loaded");
 
+        // Load user profile (optional)
+        userProfile = loadUserProfile();
+        if (userProfile) {
+            maxAPI.post("User profile loaded");
+        } else {
+            maxAPI.post("No user profile (edit core/user.md to personalize)");
+        }
+
         // Discover available skills
         const skills = discoverSkills();
         maxAPI.post(`Found ${skills.length} skills: ${skills.map(s => s.name).join(", ") || "none"}`);
@@ -128,15 +138,64 @@ initializeFromConfig();
 maxAPI.addHandler("chat", async (payloadJson) => {
     maxAPI.post("Chat handler called");
 
-    if (!isReady()) {
-        maxAPI.post("No client initialized");
-        maxAPI.outlet("error", "Not configured. Run /createconfig then edit config.json");
-        return;
-    }
-
     try {
         const payload = JSON.parse(payloadJson);
         const { message, context } = payload;
+
+        // Handle bootstrap commands first (these work without config)
+        if (message.startsWith("/")) {
+            const cmd = message.slice(1).split(" ")[0].toLowerCase();
+
+            if (cmd === "createconfig" || cmd === "resetconfig" || cmd === "initconfig" || cmd === "configreset") {
+                maxAPI.post("Bootstrap command: createconfig");
+                const result = createDefaultConfig();
+                if (result.created) {
+                    maxAPI.post("Config created at: " + result.configPath);
+                    if (result.backupPath) {
+                        maxAPI.post("Previous config backed up to: " + result.backupPath);
+                    }
+                    maxAPI.outlet("response", JSON.stringify({
+                        thinking: "Created default configuration",
+                        commands: [],
+                        response: `Config created!\n\nEdit your API key in:\n${result.configPath}\n\nThen run /reload to apply changes.`
+                    }));
+                } else {
+                    maxAPI.outlet("error", "Failed to create config");
+                }
+                return;
+            }
+
+            if (cmd === "reload" || cmd === "reloadconfig") {
+                maxAPI.post("Bootstrap command: reload");
+                clearClient();
+                currentSkill = null;
+                if (initializeFromConfig()) {
+                    maxAPI.outlet("response", JSON.stringify({
+                        thinking: "Reloaded configuration",
+                        commands: [],
+                        response: `Reloaded!\n\nProvider: ${getProvider()}\nModel: ${getModel()}`
+                    }));
+                }
+                return;
+            }
+
+            if (cmd === "openconfig") {
+                maxAPI.post("Bootstrap command: openconfig");
+                maxAPI.outlet("response", JSON.stringify({
+                    thinking: "User wants to open config directory",
+                    commands: [],
+                    response: `Config location:\n${CONFIG_DIR}\n\nFiles:\n• config.json - API keys and settings\n• prompts/system.md - System prompt\n• skills/ - Skill prompts`
+                }));
+                return;
+            }
+        }
+
+        // For everything else, check if client is ready
+        if (!isReady()) {
+            maxAPI.post("No client initialized");
+            maxAPI.outlet("error", "Not configured. Run /createconfig then edit config.json");
+            return;
+        }
 
         // Get track name from context
         const trackName = context.trackName || context.name || "unknown";
@@ -147,7 +206,7 @@ maxAPI.addHandler("chat", async (payloadJson) => {
         }
         currentTrackName = trackName;
 
-        // Handle slash commands
+        // Handle other slash commands (these need client to be ready)
         if (message.startsWith("/")) {
             maxAPI.post("Command detected: " + message);
 
@@ -187,8 +246,11 @@ maxAPI.addHandler("chat", async (payloadJson) => {
             return msg;
         });
 
-        // Build full prompt (system + skill if active)
+        // Build full prompt (system + user profile + skill if active)
         let fullPrompt = systemPrompt;
+        if (userProfile) {
+            fullPrompt += "\n\n---\n\n" + userProfile;
+        }
         if (currentSkill) {
             fullPrompt += "\n\n---\n\n" + currentSkill.prompt;
         }

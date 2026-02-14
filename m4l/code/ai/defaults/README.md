@@ -11,8 +11,9 @@ This folder contains your ChatM4L configuration.
 ## Files
 
 - **config.json** - API keys, provider settings, model selection
-- **prompts/system.md** - Main AI personality and instructions
-- **skills/** - Skill folders with specialized prompts
+- **core/system.md** - AI personality and instructions
+- **core/user.md** - Your musical profile (edit this!)
+- **skills/*.md** - Specialized skill prompts
 
 ## Commands
 
@@ -26,12 +27,11 @@ This folder contains your ChatM4L configuration.
 
 ## Adding Skills
 
-Create a folder in `skills/` with a `SKILL.md` file:
+Create a `.md` file in `skills/`:
 
 ```
 skills/
-└── my-skill/
-    └── SKILL.md
+└── my-skill.md
 ```
 
 The skill will auto-discover. Activate with `/my-skill`.
