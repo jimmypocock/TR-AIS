@@ -37,10 +37,15 @@ outlets = 1;
 // LAYOUT CONFIGURATION
 // =============================================================================
 
+// Ableton M4L device height is FIXED at 169 pixels!
+// Width is adjustable. We'll use 500px wide.
+var DEVICE_HEIGHT = 169;
+var DEVICE_WIDTH = 500;
+
 var layout = {
     sidebar: {
-        width: 45,
-        buttonHeight: 45,
+        width: 40,
+        buttonHeight: 42,  // 4 buttons × 42px = 168px (fits in 169px)
         buttons: [
             { id: "settings", icon: "S", label: "Settings" },
             { id: "skills", icon: "K", label: "Skills" },
@@ -49,9 +54,9 @@ var layout = {
         ]
     },
     input: {
-        height: 45,
-        promptWidth: 25,
-        sendButtonWidth: 45
+        height: 36,
+        promptWidth: 20,
+        sendButtonWidth: 40
     }
 };
 
@@ -140,10 +145,10 @@ function paint() {
     // Calculate layout areas
     calculateAreas();
 
-    // Draw components
-    drawSidebar();
-    drawInputArea();
-    drawChatArea();
+    // Draw components (order matters - later draws cover earlier)
+    drawChatArea();      // Draw chat first
+    drawInputArea();     // Input covers any chat overspill
+    drawSidebar();       // Sidebar on top
 }
 
 function calculateAreas() {
@@ -325,11 +330,13 @@ function drawChatArea() {
         var msg = messages[i];
         var msgHeight = msg.height;
 
+        // Skip messages entirely above viewport
         if (y + msgHeight < chatArea.y) {
             y += msgHeight + config.messageGap;
             continue;
         }
 
+        // Stop if we're past the chat area (input area will cover any partial)
         if (y > chatArea.y + chatArea.h) {
             break;
         }
