@@ -41,13 +41,26 @@ for (const cmd of commandModules) {
 
 /**
  * Check if a command name matches a skill and activate it
+ * @param {string} commandName - The skill name to activate
+ * @param {string} remainingText - Any text after the skill name (the actual request)
+ * @param {object} context - Command context
+ * @returns {object|null} - Response object, or { passthrough: message } to continue to AI
  */
-function tryActivateSkill(commandName, context) {
+function tryActivateSkill(commandName, remainingText, context) {
     const loadedSkill = loadSkill(commandName);
 
     if (loadedSkill) {
         context.setCurrentSkill(loadedSkill);
 
+        // If there's remaining text, activate skill and pass the text to AI
+        if (remainingText && remainingText.trim()) {
+            return {
+                passthrough: remainingText.trim(),
+                skillActivated: loadedSkill.title
+            };
+        }
+
+        // No additional text - just show activation message
         return {
             thinking: `Activated ${loadedSkill.name} skill`,
             commands: [],
@@ -93,7 +106,7 @@ function handleCommand(message, context) {
     }
 
     // Try to activate a skill with this name
-    const skillResult = tryActivateSkill(commandName, context);
+    const skillResult = tryActivateSkill(commandName, args, context);
     if (skillResult) {
         return skillResult;
     }

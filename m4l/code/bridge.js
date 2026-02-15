@@ -2,17 +2,16 @@
  * ChatM4L Bridge - v8 object code for Max for Live
  *
  * This script runs in the v8 object and bridges between:
- * - The Max UI (textedit, buttons)
+ * - The jsui (chat-ui.js) - complete UI component
  * - The Live API (track, devices, clips)
  * - The node.script (Claude AI)
  *
  * Inlets:
- *   0: Messages from UI and node.script
+ *   0: Messages from jsui and node.script
  *
  * Outlets:
  *   0: To node.script (chat messages + context)
- *   1: To chat history display
- *   2: To status display
+ *   1: To jsui (chat-ui.js) - messages
  */
 
 // Max boilerplate
@@ -21,25 +20,30 @@ outlets = 2;
 
 // Outlet indices
 const OUT_NODE = 0;      // To node.script
-const OUT_HISTORY = 1;   // To chat history textedit
+const OUT_CHAT = 1;      // To jsui chat-ui.js
 
-// Chat history buffer
-let chatHistory = [];
+// =============================================================================
+// STATE
+// =============================================================================
 
-// API key storage
-let apiKey = "";
+let currentView = "chat";  // chat | settings | skills | profile | help
+let pendingInput = "";     // Stored input text from textedit
+let nodeStatus = {
+    ready: false,
+    provider: "unknown",
+    model: "unknown",
+    activeSkill: null,
+    skills: []
+};
 
 // =============================================================================
 // INITIALIZATION
 // =============================================================================
 
 function bang() {
-    // Called when device loads (triggered by live.thisdevice)
     post("ChatM4L Bridge initialized\n");
-    updateStatus("Ready");
 
-    // Get initial track context to verify we're working
-    // Check if Live API is available (won't be during save)
+    // Check if Live API is available
     const track = new LiveAPI("this_device canonical_parent");
     if (!track.id) {
         post("Live API not ready (this is normal during save)\n");
@@ -48,23 +52,81 @@ function bang() {
 
     const context = getTrackContext();
     post("Track: " + context.name + "\n");
-    post("Devices: " + context.devices.length + "\n");
+
+    // Trigger jsui redraw
+    outlet(OUT_CHAT, "bang");
 }
 
 // =============================================================================
-// API KEY MANAGEMENT
+// VIEW MANAGEMENT (jsui handles UI, we just track state)
 // =============================================================================
 
-function setApiKey(key) {
-    apiKey = key;
-    // Send to node.script (it will save to config file)
-    outlet(OUT_NODE, "apikey", key);
-    updateStatus("Saving key...");
-    post("API key sent to node.script\n");
+/**
+ * Called from jsui when view changes
+ * @param {string} viewName - The new view name
+ */
+function view(viewName) {
+    const validViews = ["chat", "settings", "skills", "profile", "help"];
+    if (validViews.indexOf(viewName) === -1) {
+        post("Invalid view: " + viewName + "\n");
+        return;
+    }
+
+    currentView = viewName;
+    post("View: " + viewName + "\n");
 }
 
-function getApiKey() {
-    return apiKey;
+/**
+ * Called from jsui when send button is clicked
+ * The textedit should send its content via "input" message
+ */
+function send() {
+    if (pendingInput && pendingInput.trim() !== "") {
+        chat(pendingInput);
+        pendingInput = "";
+    } else {
+        post("No input to send\n");
+    }
+}
+
+/**
+ * Receive text from the textedit input
+ * Called when textedit outputs on return (Enter key)
+ * Immediately sends the message
+ */
+function input() {
+    var args = Array.prototype.slice.call(arguments);
+    var message = args.join(" ");
+    if (message && message.trim() !== "") {
+        chat(message);
+    }
+}
+
+/**
+ * Handle "text" message from textedit
+ * textedit sends: text <content>
+ */
+function text() {
+    post("text() called with " + arguments.length + " args\n");
+    for (var i = 0; i < arguments.length; i++) {
+        post("  arg[" + i + "] = " + arguments[i] + " (type: " + typeof arguments[i] + ")\n");
+    }
+
+    var args = Array.prototype.slice.call(arguments);
+    var message = args.join(" ");
+    post("text() message: " + message + "\n");
+
+    if (message && message.trim() !== "" && message !== "0") {
+        chat(message);
+    }
+}
+
+/**
+ * Store pending input for send button (if textedit sends on keyup instead)
+ */
+function setInput() {
+    var args = Array.prototype.slice.call(arguments);
+    pendingInput = args.join(" ");
 }
 
 // =============================================================================
@@ -72,17 +134,21 @@ function getApiKey() {
 // =============================================================================
 
 function chat(userMessage) {
-    // Called when user submits a message
     if (!userMessage || userMessage.trim() === "") {
         return;
     }
 
-    // Note: apiKey may be auto-loaded in node.script from config
-    // So we check if node.script is ready by trying to send
+    // Switch to chat view if not already (tell jsui)
+    if (currentView !== "chat") {
+        outlet(OUT_CHAT, "setView", "chat");
+        currentView = "chat";
+    }
 
-    // Add user message to history
+    // Add user message to display
     addToHistory("You", userMessage);
-    updateStatus("Thinking...");
+
+    // Show thinking indicator
+    outlet(OUT_CHAT, "thinking", 1);
 
     // Get current track context
     const context = getTrackContext();
@@ -97,7 +163,9 @@ function chat(userMessage) {
 }
 
 function response(jsonString) {
-    // Called when node.script returns a response
+    // Hide thinking indicator
+    outlet(OUT_CHAT, "thinking", 0);
+
     try {
         const result = JSON.parse(jsonString);
 
@@ -113,55 +181,54 @@ function response(jsonString) {
             addToHistory("AI", result.response);
         }
 
-        updateStatus("Ready");
-
     } catch (e) {
         post("Error parsing response: " + e + "\n");
         addToHistory("System", "Error: Could not parse AI response");
-        updateStatus("Error");
     }
 }
 
 function error() {
-    // Called when node.script reports an error
-    // Arguments may be split by spaces, so rejoin them
+    // Hide thinking indicator
+    outlet(OUT_CHAT, "thinking", 0);
+
     var message = Array.prototype.slice.call(arguments).join(" ");
     post("AI Error: " + message + "\n");
-
-    // Give helpful message for common errors
-    if (message === "API key not configured") {
-        addToHistory("System", "No API key set. Please click Settings (⚙) to configure.");
-        updateStatus("Setup Required");
-    } else {
-        addToHistory("System", "Error: " + message);
-        updateStatus("Error");
-    }
+    addToHistory("System", "Error: " + message);
 }
+
+// =============================================================================
+// NODE.SCRIPT STATUS HANDLERS
+// =============================================================================
 
 function ready() {
-    // Called when node.script has a valid API key (auto-loaded or just set)
-    post("AI ready with API key\n");
-    updateStatus("Ready");
+    nodeStatus.ready = true;
+    post("AI ready\n");
+    // Trigger jsui redraw
+    outlet(OUT_CHAT, "bang");
 }
 
-function keycleared() {
-    // Called when API key is cleared from config
-    post("API key cleared\n");
-    updateStatus("No API Key");
-    addToHistory("System", "API key cleared. Enter a new key to continue.");
+function needsconfig() {
+    nodeStatus.ready = false;
+    post("Config needed\n");
+    addToHistory("System", "Welcome! Run /createconfig to get started.");
 }
 
-function needskey() {
-    // Called when node.script starts without a saved API key
-    post("No API key configured\n");
-    updateStatus("Setup Required");
-    addToHistory("System", "Welcome! Please click Settings (⚙) to enter your Anthropic API key.");
-}
+function status(jsonString) {
+    // Called when node.script sends status update
+    try {
+        const data = JSON.parse(jsonString);
+        nodeStatus.provider = data.provider || "unknown";
+        nodeStatus.model = data.model || "unknown";
+        nodeStatus.activeSkill = data.activeSkill || null;
+        nodeStatus.skills = data.availableSkills || [];
+        nodeStatus.ready = data.ready || false;
+        post("Status updated: " + nodeStatus.provider + "/" + nodeStatus.model + "\n");
 
-function keysaved() {
-    // Called when API key is successfully saved and verified
-    post("API key saved and verified\n");
-    addToHistory("System", "API Key Saved!");
+        // TODO: Could pass status to jsui for dynamic settings/skills display
+        // For now, jsui shows static content
+    } catch (e) {
+        post("Error parsing status: " + e + "\n");
+    }
 }
 
 // =============================================================================
@@ -171,7 +238,6 @@ function keysaved() {
 function getTrackContext() {
     const track = new LiveAPI("this_device canonical_parent");
 
-    // Return empty context if Live API not available
     if (!track.id) {
         return {
             name: "Unknown",
@@ -216,7 +282,6 @@ function getDevices() {
     const deviceIds = track.get("devices");
     const devices = [];
 
-    // deviceIds comes as [id, id, id, ...] - get count
     const count = Math.floor(deviceIds.length / 2);
 
     for (let i = 0; i < count; i++) {
@@ -224,7 +289,6 @@ function getDevices() {
         const name = device.get("name").toString();
         const className = device.get("class_name").toString();
 
-        // Skip our own device
         if (className === "MaxForLive" || name === "ChatM4L") {
             continue;
         }
@@ -246,7 +310,6 @@ function getDeviceParameters(deviceIndex) {
     const params = [];
 
     const count = Math.floor(paramIds.length / 2);
-    // Limit to first 20 params to avoid huge context
     const limit = Math.min(count, 20);
 
     for (let i = 0; i < limit; i++) {
@@ -272,7 +335,6 @@ function getClipSlots() {
     const slots = [];
 
     const count = Math.floor(slotIds.length / 2);
-    // Limit to first 8 slots (one scene page)
     const limit = Math.min(count, 8);
 
     for (let i = 0; i < limit; i++) {
@@ -309,39 +371,30 @@ function executeCommand(cmd) {
             case "set_parameter":
                 setDeviceParameter(cmd.device, cmd.param, cmd.value);
                 break;
-
             case "set_volume":
                 setTrackVolume(cmd.value);
                 break;
-
             case "set_pan":
                 setTrackPan(cmd.value);
                 break;
-
             case "set_mute":
                 setTrackMute(cmd.value);
                 break;
-
             case "set_solo":
                 setTrackSolo(cmd.value);
                 break;
-
             case "add_notes":
                 addMidiNotes(cmd.clip_slot, cmd.notes, cmd.length || 4);
                 break;
-
             case "clear_clip":
                 clearClip(cmd.clip_slot);
                 break;
-
             case "fire_clip":
                 fireClip(cmd.clip_slot);
                 break;
-
             case "stop_clip":
                 stopClip(cmd.clip_slot);
                 break;
-
             default:
                 post("Unknown command: " + cmd.action + "\n");
         }
@@ -385,15 +438,12 @@ function setTrackSolo(value) {
 function addMidiNotes(clipSlotIndex, notes, length) {
     const slot = new LiveAPI("this_device canonical_parent clip_slots " + clipSlotIndex);
 
-    // Create clip if needed
     if (slot.get("has_clip") == 0) {
         slot.call("create_clip", length);
         post("Created clip in slot " + clipSlotIndex + "\n");
     }
 
     const clip = new LiveAPI("this_device canonical_parent clip_slots " + clipSlotIndex + " clip");
-
-    // Add notes
     clip.call("add_new_notes", { notes: notes });
     post("Added " + notes.length + " notes to clip\n");
 }
@@ -426,29 +476,68 @@ function stopClip(clipSlotIndex) {
 // =============================================================================
 
 function addToHistory(sender, message) {
-    const entry = sender + ": " + message;
-    chatHistory.push(entry);
-
-    // Keep last 50 messages
-    if (chatHistory.length > 50) {
-        chatHistory.shift();
-    }
-
-    // Send to history display
-    outlet(OUT_HISTORY, "set", chatHistory.join("\n"));
-}
-
-function updateStatus(status) {
-    // Show status in chat history (skip "Ready" to reduce noise)
-    if (status !== "Ready") {
-        addToHistory("System", status);
-    }
+    // Send message to jsui chat display
+    // jsui's anything() handler will receive this as: sender(message)
+    outlet(OUT_CHAT, sender, message);
 }
 
 function clearHistory() {
-    chatHistory = [];
-    outlet(OUT_HISTORY, "set", "");
+    // Clear jsui chat display
+    outlet(OUT_CHAT, "clear");
     post("Chat history cleared\n");
+}
+
+/**
+ * Called from node.script when chat is cleared
+ */
+function chatcleared() {
+    clearHistory();
+}
+
+/**
+ * Called from node.script when new chat is created
+ */
+function newchat(sessionId) {
+    clearHistory();
+    post("New chat session: " + sessionId + "\n");
+}
+
+/**
+ * Receive inputrect from jsui (for positioning textedit)
+ * This is informational - textedit position is set manually in Max
+ */
+function inputrect(x, y, w, h) {
+    post("Input rect: " + x + ", " + y + ", " + w + ", " + h + "\n");
+}
+
+/**
+ * Catch stdout from node.script (console.log output)
+ */
+function stdout() {
+    // Ignore stdout messages from node.script
+}
+
+/**
+ * Catch any unhandled messages - treat as chat input
+ */
+function anything() {
+    var name = messagename;
+    var args = Array.prototype.slice.call(arguments);
+
+    // Combine messagename + args as the full message
+    // This handles textedit output which sends raw text
+    var fullMessage = name;
+    if (args.length > 0) {
+        fullMessage += " " + args.join(" ");
+    }
+
+    // Ignore internal Max messages
+    if (name === "script" || name === "compile" || name === "loadbang") {
+        return;
+    }
+
+    post("Chat input: " + fullMessage + "\n");
+    chat(fullMessage);
 }
 
 // =============================================================================
@@ -456,7 +545,6 @@ function clearHistory() {
 // =============================================================================
 
 function dumpContext() {
-    // Debug function to print current context
     const context = getTrackContext();
     post("--- Track Context ---\n");
     post(JSON.stringify(context, null, 2) + "\n");
@@ -464,7 +552,6 @@ function dumpContext() {
 }
 
 function testNote() {
-    // Debug function to add a test note
     addMidiNotes(0, [
         { pitch: 60, start_time: 0, duration: 0.5, velocity: 100 },
         { pitch: 64, start_time: 0.5, duration: 0.5, velocity: 100 },

@@ -121,6 +121,7 @@ function initializeFromConfig() {
         maxAPI.post(`Found ${skills.length} skills: ${skills.map(s => s.name).join(", ") || "none"}`);
 
         maxAPI.outlet("ready");
+        sendStatus();
         return true;
     }
 
@@ -140,7 +141,8 @@ maxAPI.addHandler("chat", async (payloadJson) => {
 
     try {
         const payload = JSON.parse(payloadJson);
-        const { message, context } = payload;
+        let { message } = payload;
+        const { context } = payload;
 
         // Handle bootstrap commands first (these work without config)
         if (message.startsWith("/")) {
@@ -216,15 +218,31 @@ maxAPI.addHandler("chat", async (payloadJson) => {
                 currentSkill,
                 maxAPI,
                 setCurrentSession: (session) => { currentSession = session; },
-                setCurrentSkill: (skill) => { currentSkill = skill; }
+                setCurrentSkill: (skill) => {
+                    currentSkill = skill;
+                    sendStatus();  // Update UI when skill changes
+                }
             };
 
             const result = handleCommand(message, commandContext);
             if (result) {
-                maxAPI.outlet("response", JSON.stringify(result));
-                return;
+                // Check if this is a skill activation with passthrough text
+                if (result.passthrough) {
+                    // Skill was activated for this message only (one-shot)
+                    maxAPI.post("Skill activated (one-shot): " + result.skillActivated + ", processing: " + result.passthrough);
+                    message = result.passthrough;
+                    // Continue to AI processing below (skill will be cleared after response)
+                } else {
+                    // Regular command response - return immediately
+                    maxAPI.outlet("response", JSON.stringify(result));
+                    return;
+                }
             }
         }
+
+        // Skills activated via passthrough are one-shot (cleared after this message)
+        // Skills activated via /skill command persist until manually deactivated
+        const isOneShotSkill = message !== payload.message && currentSkill;
 
         maxAPI.post("Processing on track '" + trackName + "': " + message);
 
@@ -281,15 +299,37 @@ maxAPI.addHandler("chat", async (payloadJson) => {
                 }
             } catch (extractError) {
                 maxAPI.post("Parse error: " + extractError.message);
+
+                // Check if it looks like a truncated response
+                const isTruncated = responseText.length > 500 &&
+                    (responseText.endsWith("...") ||
+                     !responseText.trim().endsWith("}") ||
+                     extractError.message.includes("position"));
+
+                let errorMessage;
+                if (isTruncated) {
+                    errorMessage = "Response was too long and got cut off. Try a simpler request, or increase maxTokens in your config.json and run /reload.";
+                } else {
+                    errorMessage = "Had trouble understanding the AI response. Try rephrasing your request.";
+                }
+
                 result = {
-                    thinking: "Had trouble parsing the response",
+                    thinking: "Response parsing failed",
                     commands: [],
-                    response: responseText.substring(0, 200)
+                    response: errorMessage
                 };
             }
         }
 
         maxAPI.outlet("response", JSON.stringify(result));
+
+        // Clear skill after one-shot use (e.g., "/drums make a beat")
+        // Skills activated via /skill command persist until manually deactivated
+        if (isOneShotSkill) {
+            currentSkill = null;
+            sendStatus();
+            maxAPI.post("Skill cleared after one-shot use");
+        }
 
     } catch (e) {
         maxAPI.post("Error: " + e.message);
@@ -360,15 +400,13 @@ maxAPI.addHandler("openconfig", () => {
 });
 
 // =============================================================================
-// UTILITY HANDLERS
+// STATUS BROADCAST
 // =============================================================================
 
-maxAPI.addHandler("ping", () => {
-    maxAPI.outlet("pong");
-    maxAPI.post("Pong!");
-});
-
-maxAPI.addHandler("status", () => {
+/**
+ * Send current status to bridge.js for UI updates
+ */
+function sendStatus() {
     const skills = discoverSkills();
     const status = {
         ready: isReady(),
@@ -381,7 +419,21 @@ maxAPI.addHandler("status", () => {
         activeSkill: currentSkill ? currentSkill.name : null,
         availableSkills: skills.map(s => s.name)
     };
-    maxAPI.post("Status: " + JSON.stringify(status));
+    maxAPI.outlet("status", JSON.stringify(status));
+}
+
+// =============================================================================
+// UTILITY HANDLERS
+// =============================================================================
+
+maxAPI.addHandler("ping", () => {
+    maxAPI.outlet("pong");
+    maxAPI.post("Pong!");
+});
+
+maxAPI.addHandler("status", () => {
+    sendStatus();
+    maxAPI.post("Status sent to bridge");
 });
 
 // Clear session
