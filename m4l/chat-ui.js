@@ -100,7 +100,6 @@ var colors = {
 var messages = [];
 var scrollOffset = 0;
 var totalHeight = 0;
-var hasGraphicsContext = false;
 
 var currentView = "chat";  // chat | settings | skills | profile | help
 var activeButton = -1;     // -1 = chat (no button), 0-3 = sidebar buttons
@@ -140,7 +139,6 @@ var config = {
 function paint() {
     viewWidth = mgraphics.size[0];
     viewHeight = mgraphics.size[1];
-    hasGraphicsContext = true;
 
     // Calculate layout areas
     calculateAreas();
@@ -566,18 +564,22 @@ function addMessageInternal(sender, text) {
         type = "error";
     }
 
+    // Estimate lines for initial height (will be recalculated in paint)
+    var estimatedCharsPerLine = 50;
+    var estimatedLines = Math.ceil(text.length / estimatedCharsPerLine) || 1;
+    var estimatedHeight = (estimatedLines * config.lineHeight) + (config.messagePadding * 2);
+
     var msg = {
         sender: sender,
         text: text,
         type: type,
-        lines: [],
-        height: 0,
-        needsRewrap: !hasGraphicsContext
+        lines: [text],  // Temporary - will be wrapped in paint()
+        height: estimatedHeight,
+        needsRewrap: true  // Always rewrap in paint() where mgraphics is valid
     };
 
-    if (hasGraphicsContext) {
-        wrapMessageText(msg);
-    }
+    // Don't call wrapMessageText() here - mgraphics not available outside paint()
+    // The paint() cycle will handle wrapping via needsRewrap flag
 
     messages.push(msg);
 
@@ -592,6 +594,9 @@ function addMessageInternal(sender, text) {
 }
 
 function wrapMessageText(msg) {
+    // NOTE: This function should ONLY be called from inside paint()
+    // where mgraphics context is valid. Called from drawChatArea().
+
     var maxWidth = chatArea.w - (config.padding.x * 2) - 60;
     if (maxWidth < 100) maxWidth = 100;
 
@@ -599,16 +604,16 @@ function wrapMessageText(msg) {
     var lines = [];
     var currentLine = "";
 
+    // Try to use mgraphics for accurate text measurement
+    // This works because we're called from inside paint()
     var canMeasure = false;
-    if (hasGraphicsContext) {
-        try {
-            mgraphics.select_font_face(config.fontName);
-            mgraphics.set_font_size(config.fontSize);
-            var testMetrics = mgraphics.text_measure("test");
-            canMeasure = (testMetrics && testMetrics[0] > 0);
-        } catch (e) {
-            canMeasure = false;
-        }
+    try {
+        mgraphics.select_font_face(config.fontName);
+        mgraphics.set_font_size(config.fontSize);
+        var testMetrics = mgraphics.text_measure("test");
+        canMeasure = (testMetrics && testMetrics[0] > 0);
+    } catch (e) {
+        canMeasure = false;
     }
 
     if (canMeasure) {
@@ -649,11 +654,10 @@ function wrapMessageText(msg) {
 }
 
 function recalculateHeights() {
+    // Just sum existing heights - don't call wrapMessageText here
+    // Text wrapping happens in paint() via drawChatArea()'s needsRewrap check
     totalHeight = 0;
     for (var i = 0; i < messages.length; i++) {
-        if (messages[i].needsRewrap && hasGraphicsContext) {
-            wrapMessageText(messages[i]);
-        }
         totalHeight += messages[i].height + config.messageGap;
     }
 }
