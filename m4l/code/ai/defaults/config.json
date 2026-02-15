@@ -36,6 +36,6 @@
   "settings": {
     "maxHistory": 20,
     "sessionGapHours": 4,
-    "maxTokens": 1024
+    "maxTokens": 4096
   }
 }

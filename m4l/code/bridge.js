@@ -2,7 +2,7 @@
  * ChatM4L Bridge - v8 object code for Max for Live
  *
  * This script runs in the v8 object and bridges between:
- * - The Max UI (textedit, buttons)
+ * - The Max UI (jsui chat display, buttons, panels)
  * - The Live API (track, devices, clips)
  * - The node.script (Claude AI)
  *
@@ -11,35 +11,45 @@
  *
  * Outlets:
  *   0: To node.script (chat messages + context)
- *   1: To chat history display
- *   2: To status display
+ *   1: To chat display (jsui) - message commands
+ *   2: To static content display (textedit) - for non-chat views
+ *   3: To sidebar button states
+ *   4: To input field visibility/state
  */
 
 // Max boilerplate
 inlets = 1;
-outlets = 2;
+outlets = 5;
 
 // Outlet indices
 const OUT_NODE = 0;      // To node.script
-const OUT_HISTORY = 1;   // To chat history textedit
+const OUT_CHAT = 1;      // To jsui chat display
+const OUT_STATIC = 2;    // To textedit for static views (settings, help, etc)
+const OUT_SIDEBAR = 3;   // To sidebar (active button index)
+const OUT_INPUT = 4;     // To input area (show/hide, enable/disable)
 
-// Chat history buffer
+// =============================================================================
+// STATE
+// =============================================================================
+
+let currentView = "chat";  // chat | settings | skills | profile | help
 let chatHistory = [];
-
-// API key storage
-let apiKey = "";
+let nodeStatus = {
+    ready: false,
+    provider: "unknown",
+    model: "unknown",
+    activeSkill: null,
+    skills: []
+};
 
 // =============================================================================
 // INITIALIZATION
 // =============================================================================
 
 function bang() {
-    // Called when device loads (triggered by live.thisdevice)
     post("ChatM4L Bridge initialized\n");
-    updateStatus("Ready");
 
-    // Get initial track context to verify we're working
-    // Check if Live API is available (won't be during save)
+    // Check if Live API is available
     const track = new LiveAPI("this_device canonical_parent");
     if (!track.id) {
         post("Live API not ready (this is normal during save)\n");
@@ -48,23 +58,152 @@ function bang() {
 
     const context = getTrackContext();
     post("Track: " + context.name + "\n");
-    post("Devices: " + context.devices.length + "\n");
+
+    // Show chat view by default
+    setView("chat");
 }
 
 // =============================================================================
-// API KEY MANAGEMENT
+// VIEW MANAGEMENT
 // =============================================================================
 
-function setApiKey(key) {
-    apiKey = key;
-    // Send to node.script (it will save to config file)
-    outlet(OUT_NODE, "apikey", key);
-    updateStatus("Saving key...");
-    post("API key sent to node.script\n");
+function setView(viewName) {
+    const validViews = ["chat", "settings", "skills", "profile", "help"];
+    if (validViews.indexOf(viewName) === -1) {
+        post("Invalid view: " + viewName + "\n");
+        return;
+    }
+
+    currentView = viewName;
+    post("View changed to: " + viewName + "\n");
+
+    // Update sidebar highlight (0=settings, 1=skills, 2=profile, 3=help)
+    const sidebarIndex = {
+        "settings": 0,
+        "skills": 1,
+        "profile": 2,
+        "help": 3,
+        "chat": -1  // No sidebar button for chat
+    };
+    outlet(OUT_SIDEBAR, sidebarIndex[viewName]);
+
+    // Show/hide input based on view
+    outlet(OUT_INPUT, viewName === "chat" ? 1 : 0);
+
+    // Toggle visibility between chat jsui and static textedit
+    // chat view: show jsui (1), hide textedit (0)
+    // other views: hide jsui (0), show textedit (1)
+    outlet(OUT_CHAT, "visible", viewName === "chat" ? 1 : 0);
+    outlet(OUT_STATIC, "visible", viewName === "chat" ? 0 : 1);
+
+    // Refresh content
+    refreshView();
 }
 
-function getApiKey() {
-    return apiKey;
+function refreshView() {
+    if (currentView === "chat") {
+        // Chat view uses jsui - just trigger a redraw
+        // Messages are already in the jsui, no need to resend
+        outlet(OUT_CHAT, "bang");
+        return;
+    }
+
+    // Other views use static textedit
+    let content = "";
+
+    switch (currentView) {
+        case "settings":
+            content = getSettingsContent();
+            break;
+        case "skills":
+            content = getSkillsContent();
+            break;
+        case "profile":
+            content = getProfileContent();
+            break;
+        case "help":
+            content = getHelpContent();
+            break;
+    }
+
+    outlet(OUT_STATIC, "set", content);
+}
+
+// Note: Chat content is managed by jsui (chat-display.js)
+// getChatContent() removed - jsui handles its own state
+
+function getSettingsContent() {
+    let content = "SETTINGS\n";
+    content += "─────────────────────────\n\n";
+    content += "Provider: " + nodeStatus.provider + "\n";
+    content += "Model: " + nodeStatus.model + "\n\n";
+    content += "Status: " + (nodeStatus.ready ? "Ready" : "Not configured") + "\n\n";
+    content += "─────────────────────────\n\n";
+    content += "Config location:\n";
+    content += "~/Library/Application Support/ChatM4L/\n\n";
+    content += "Commands:\n";
+    content += "• /reload - Reload config\n";
+    content += "• /openconfig - Show config path\n";
+    content += "• /createconfig - Create/reset config";
+    return content;
+}
+
+function getSkillsContent() {
+    let content = "SKILLS\n";
+    content += "─────────────────────────\n\n";
+
+    if (nodeStatus.skills.length === 0) {
+        content += "No skills available.\n\n";
+        content += "Add skills to:\n";
+        content += "~/Library/Application Support/ChatM4L/skills/";
+    } else {
+        content += "Available skills:\n\n";
+        for (var i = 0; i < nodeStatus.skills.length; i++) {
+            var skill = nodeStatus.skills[i];
+            var isActive = nodeStatus.activeSkill === skill;
+            content += (isActive ? "● " : "○ ") + skill;
+            if (isActive) content += "  [Active]";
+            content += "\n";
+        }
+        content += "\n─────────────────────────\n\n";
+        content += "Commands:\n";
+        content += "• /<skill> - Activate skill\n";
+        content += "• /skill off - Deactivate";
+    }
+    return content;
+}
+
+function getProfileContent() {
+    let content = "PROFILE\n";
+    content += "─────────────────────────\n\n";
+    content += "Your user profile helps ChatM4L\n";
+    content += "understand your musical style.\n\n";
+    content += "Edit: core/user.md\n\n";
+    content += "─────────────────────────\n\n";
+    content += "Include:\n";
+    content += "• Genres & influences\n";
+    content += "• Reference artists\n";
+    content += "• Sound preferences\n";
+    content += "• Hardware & plugins";
+    return content;
+}
+
+function getHelpContent() {
+    let content = "HELP\n";
+    content += "─────────────────────────\n\n";
+    content += "COMMANDS\n\n";
+    content += "/help      Show this help\n";
+    content += "/status    Show status\n";
+    content += "/newchat   Clear conversation\n";
+    content += "/reload    Reload config\n";
+    content += "/skills    List skills\n";
+    content += "/<skill>   Activate skill\n\n";
+    content += "─────────────────────────\n\n";
+    content += "TIPS\n\n";
+    content += "• Just type naturally!\n";
+    content += "• AI sees your track context\n";
+    content += "• Use skills for specialized help";
+    return content;
 }
 
 // =============================================================================
@@ -72,17 +211,17 @@ function getApiKey() {
 // =============================================================================
 
 function chat(userMessage) {
-    // Called when user submits a message
     if (!userMessage || userMessage.trim() === "") {
         return;
     }
 
-    // Note: apiKey may be auto-loaded in node.script from config
-    // So we check if node.script is ready by trying to send
+    // Switch to chat view if not already
+    if (currentView !== "chat") {
+        setView("chat");
+    }
 
     // Add user message to history
     addToHistory("You", userMessage);
-    updateStatus("Thinking...");
 
     // Get current track context
     const context = getTrackContext();
@@ -97,7 +236,6 @@ function chat(userMessage) {
 }
 
 function response(jsonString) {
-    // Called when node.script returns a response
     try {
         const result = JSON.parse(jsonString);
 
@@ -113,55 +251,52 @@ function response(jsonString) {
             addToHistory("AI", result.response);
         }
 
-        updateStatus("Ready");
-
     } catch (e) {
         post("Error parsing response: " + e + "\n");
         addToHistory("System", "Error: Could not parse AI response");
-        updateStatus("Error");
     }
 }
 
 function error() {
-    // Called when node.script reports an error
-    // Arguments may be split by spaces, so rejoin them
     var message = Array.prototype.slice.call(arguments).join(" ");
     post("AI Error: " + message + "\n");
-
-    // Give helpful message for common errors
-    if (message === "API key not configured") {
-        addToHistory("System", "No API key set. Please click Settings (⚙) to configure.");
-        updateStatus("Setup Required");
-    } else {
-        addToHistory("System", "Error: " + message);
-        updateStatus("Error");
-    }
+    addToHistory("System", "Error: " + message);
 }
+
+// =============================================================================
+// NODE.SCRIPT STATUS HANDLERS
+// =============================================================================
 
 function ready() {
-    // Called when node.script has a valid API key (auto-loaded or just set)
-    post("AI ready with API key\n");
-    updateStatus("Ready");
+    nodeStatus.ready = true;
+    post("AI ready\n");
+    refreshView();
 }
 
-function keycleared() {
-    // Called when API key is cleared from config
-    post("API key cleared\n");
-    updateStatus("No API Key");
-    addToHistory("System", "API key cleared. Enter a new key to continue.");
+function needsconfig() {
+    nodeStatus.ready = false;
+    post("Config needed\n");
+    addToHistory("System", "Welcome! Run /createconfig to get started.");
 }
 
-function needskey() {
-    // Called when node.script starts without a saved API key
-    post("No API key configured\n");
-    updateStatus("Setup Required");
-    addToHistory("System", "Welcome! Please click Settings (⚙) to enter your Anthropic API key.");
-}
+function status(jsonString) {
+    // Called when node.script sends status update
+    try {
+        const data = JSON.parse(jsonString);
+        nodeStatus.provider = data.provider || "unknown";
+        nodeStatus.model = data.model || "unknown";
+        nodeStatus.activeSkill = data.activeSkill || null;
+        nodeStatus.skills = data.availableSkills || [];
+        nodeStatus.ready = data.ready || false;
+        post("Status updated: " + nodeStatus.provider + "/" + nodeStatus.model + "\n");
 
-function keysaved() {
-    // Called when API key is successfully saved and verified
-    post("API key saved and verified\n");
-    addToHistory("System", "API Key Saved!");
+        // Refresh if viewing settings or skills
+        if (currentView === "settings" || currentView === "skills") {
+            refreshView();
+        }
+    } catch (e) {
+        post("Error parsing status: " + e + "\n");
+    }
 }
 
 // =============================================================================
@@ -171,7 +306,6 @@ function keysaved() {
 function getTrackContext() {
     const track = new LiveAPI("this_device canonical_parent");
 
-    // Return empty context if Live API not available
     if (!track.id) {
         return {
             name: "Unknown",
@@ -216,7 +350,6 @@ function getDevices() {
     const deviceIds = track.get("devices");
     const devices = [];
 
-    // deviceIds comes as [id, id, id, ...] - get count
     const count = Math.floor(deviceIds.length / 2);
 
     for (let i = 0; i < count; i++) {
@@ -224,7 +357,6 @@ function getDevices() {
         const name = device.get("name").toString();
         const className = device.get("class_name").toString();
 
-        // Skip our own device
         if (className === "MaxForLive" || name === "ChatM4L") {
             continue;
         }
@@ -246,7 +378,6 @@ function getDeviceParameters(deviceIndex) {
     const params = [];
 
     const count = Math.floor(paramIds.length / 2);
-    // Limit to first 20 params to avoid huge context
     const limit = Math.min(count, 20);
 
     for (let i = 0; i < limit; i++) {
@@ -272,7 +403,6 @@ function getClipSlots() {
     const slots = [];
 
     const count = Math.floor(slotIds.length / 2);
-    // Limit to first 8 slots (one scene page)
     const limit = Math.min(count, 8);
 
     for (let i = 0; i < limit; i++) {
@@ -309,39 +439,30 @@ function executeCommand(cmd) {
             case "set_parameter":
                 setDeviceParameter(cmd.device, cmd.param, cmd.value);
                 break;
-
             case "set_volume":
                 setTrackVolume(cmd.value);
                 break;
-
             case "set_pan":
                 setTrackPan(cmd.value);
                 break;
-
             case "set_mute":
                 setTrackMute(cmd.value);
                 break;
-
             case "set_solo":
                 setTrackSolo(cmd.value);
                 break;
-
             case "add_notes":
                 addMidiNotes(cmd.clip_slot, cmd.notes, cmd.length || 4);
                 break;
-
             case "clear_clip":
                 clearClip(cmd.clip_slot);
                 break;
-
             case "fire_clip":
                 fireClip(cmd.clip_slot);
                 break;
-
             case "stop_clip":
                 stopClip(cmd.clip_slot);
                 break;
-
             default:
                 post("Unknown command: " + cmd.action + "\n");
         }
@@ -385,15 +506,12 @@ function setTrackSolo(value) {
 function addMidiNotes(clipSlotIndex, notes, length) {
     const slot = new LiveAPI("this_device canonical_parent clip_slots " + clipSlotIndex);
 
-    // Create clip if needed
     if (slot.get("has_clip") == 0) {
         slot.call("create_clip", length);
         post("Created clip in slot " + clipSlotIndex + "\n");
     }
 
     const clip = new LiveAPI("this_device canonical_parent clip_slots " + clipSlotIndex + " clip");
-
-    // Add notes
     clip.call("add_new_notes", { notes: notes });
     post("Added " + notes.length + " notes to clip\n");
 }
@@ -426,28 +544,23 @@ function stopClip(clipSlotIndex) {
 // =============================================================================
 
 function addToHistory(sender, message) {
+    // Send message to jsui chat display
+    // Format: message <sender> <text>
+    outlet(OUT_CHAT, "message", sender, message);
+
+    // Also keep local history for potential future use
     const entry = sender + ": " + message;
     chatHistory.push(entry);
 
-    // Keep last 50 messages
     if (chatHistory.length > 50) {
         chatHistory.shift();
-    }
-
-    // Send to history display
-    outlet(OUT_HISTORY, "set", chatHistory.join("\n"));
-}
-
-function updateStatus(status) {
-    // Show status in chat history (skip "Ready" to reduce noise)
-    if (status !== "Ready") {
-        addToHistory("System", status);
     }
 }
 
 function clearHistory() {
     chatHistory = [];
-    outlet(OUT_HISTORY, "set", "");
+    // Clear jsui chat display
+    outlet(OUT_CHAT, "clear");
     post("Chat history cleared\n");
 }
 
@@ -456,7 +569,6 @@ function clearHistory() {
 // =============================================================================
 
 function dumpContext() {
-    // Debug function to print current context
     const context = getTrackContext();
     post("--- Track Context ---\n");
     post(JSON.stringify(context, null, 2) + "\n");
@@ -464,7 +576,6 @@ function dumpContext() {
 }
 
 function testNote() {
-    // Debug function to add a test note
     addMidiNotes(0, [
         { pitch: 60, start_time: 0, duration: 0.5, velocity: 100 },
         { pitch: 64, start_time: 0.5, duration: 0.5, velocity: 100 },
