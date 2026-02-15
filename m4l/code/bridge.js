@@ -2,38 +2,32 @@
  * ChatM4L Bridge - v8 object code for Max for Live
  *
  * This script runs in the v8 object and bridges between:
- * - The Max UI (jsui chat display, buttons, panels)
+ * - The jsui (chat-ui.js) - complete UI component
  * - The Live API (track, devices, clips)
  * - The node.script (Claude AI)
  *
  * Inlets:
- *   0: Messages from UI and node.script
+ *   0: Messages from jsui and node.script
  *
  * Outlets:
  *   0: To node.script (chat messages + context)
- *   1: To chat display (jsui) - message commands
- *   2: To static content display (textedit) - for non-chat views
- *   3: To sidebar button states
- *   4: To input field visibility/state
+ *   1: To jsui (chat-ui.js) - messages
  */
 
 // Max boilerplate
 inlets = 1;
-outlets = 5;
+outlets = 2;
 
 // Outlet indices
 const OUT_NODE = 0;      // To node.script
-const OUT_CHAT = 1;      // To jsui chat display
-const OUT_STATIC = 2;    // To textedit for static views (settings, help, etc)
-const OUT_SIDEBAR = 3;   // To sidebar (active button index)
-const OUT_INPUT = 4;     // To input area (show/hide, enable/disable)
+const OUT_CHAT = 1;      // To jsui chat-ui.js
 
 // =============================================================================
 // STATE
 // =============================================================================
 
 let currentView = "chat";  // chat | settings | skills | profile | help
-let chatHistory = [];
+let pendingInput = "";     // Stored input text from textedit
 let nodeStatus = {
     ready: false,
     provider: "unknown",
@@ -59,15 +53,19 @@ function bang() {
     const context = getTrackContext();
     post("Track: " + context.name + "\n");
 
-    // Show chat view by default
-    setView("chat");
+    // Trigger jsui redraw
+    outlet(OUT_CHAT, "bang");
 }
 
 // =============================================================================
-// VIEW MANAGEMENT
+// VIEW MANAGEMENT (jsui handles UI, we just track state)
 // =============================================================================
 
-function setView(viewName) {
+/**
+ * Called from jsui when view changes
+ * @param {string} viewName - The new view name
+ */
+function view(viewName) {
     const validViews = ["chat", "settings", "skills", "profile", "help"];
     if (validViews.indexOf(viewName) === -1) {
         post("Invalid view: " + viewName + "\n");
@@ -75,135 +73,60 @@ function setView(viewName) {
     }
 
     currentView = viewName;
-    post("View changed to: " + viewName + "\n");
-
-    // Update sidebar highlight (0=settings, 1=skills, 2=profile, 3=help)
-    const sidebarIndex = {
-        "settings": 0,
-        "skills": 1,
-        "profile": 2,
-        "help": 3,
-        "chat": -1  // No sidebar button for chat
-    };
-    outlet(OUT_SIDEBAR, sidebarIndex[viewName]);
-
-    // Show/hide input based on view
-    outlet(OUT_INPUT, viewName === "chat" ? 1 : 0);
-
-    // Toggle visibility between chat jsui and static textedit
-    // chat view: show jsui (1), hide textedit (0)
-    // other views: hide jsui (0), show textedit (1)
-    outlet(OUT_CHAT, "visible", viewName === "chat" ? 1 : 0);
-    outlet(OUT_STATIC, "visible", viewName === "chat" ? 0 : 1);
-
-    // Refresh content
-    refreshView();
+    post("View: " + viewName + "\n");
 }
 
-function refreshView() {
-    if (currentView === "chat") {
-        // Chat view uses jsui - just trigger a redraw
-        // Messages are already in the jsui, no need to resend
-        outlet(OUT_CHAT, "bang");
-        return;
-    }
-
-    // Other views use static textedit
-    let content = "";
-
-    switch (currentView) {
-        case "settings":
-            content = getSettingsContent();
-            break;
-        case "skills":
-            content = getSkillsContent();
-            break;
-        case "profile":
-            content = getProfileContent();
-            break;
-        case "help":
-            content = getHelpContent();
-            break;
-    }
-
-    outlet(OUT_STATIC, "set", content);
-}
-
-// Note: Chat content is managed by jsui (chat-display.js)
-// getChatContent() removed - jsui handles its own state
-
-function getSettingsContent() {
-    let content = "SETTINGS\n";
-    content += "─────────────────────────\n\n";
-    content += "Provider: " + nodeStatus.provider + "\n";
-    content += "Model: " + nodeStatus.model + "\n\n";
-    content += "Status: " + (nodeStatus.ready ? "Ready" : "Not configured") + "\n\n";
-    content += "─────────────────────────\n\n";
-    content += "Config location:\n";
-    content += "~/Library/Application Support/ChatM4L/\n\n";
-    content += "Commands:\n";
-    content += "• /reload - Reload config\n";
-    content += "• /openconfig - Show config path\n";
-    content += "• /createconfig - Create/reset config";
-    return content;
-}
-
-function getSkillsContent() {
-    let content = "SKILLS\n";
-    content += "─────────────────────────\n\n";
-
-    if (nodeStatus.skills.length === 0) {
-        content += "No skills available.\n\n";
-        content += "Add skills to:\n";
-        content += "~/Library/Application Support/ChatM4L/skills/";
+/**
+ * Called from jsui when send button is clicked
+ * The textedit should send its content via "input" message
+ */
+function send() {
+    if (pendingInput && pendingInput.trim() !== "") {
+        chat(pendingInput);
+        pendingInput = "";
     } else {
-        content += "Available skills:\n\n";
-        for (var i = 0; i < nodeStatus.skills.length; i++) {
-            var skill = nodeStatus.skills[i];
-            var isActive = nodeStatus.activeSkill === skill;
-            content += (isActive ? "● " : "○ ") + skill;
-            if (isActive) content += "  [Active]";
-            content += "\n";
-        }
-        content += "\n─────────────────────────\n\n";
-        content += "Commands:\n";
-        content += "• /<skill> - Activate skill\n";
-        content += "• /skill off - Deactivate";
+        post("No input to send\n");
     }
-    return content;
 }
 
-function getProfileContent() {
-    let content = "PROFILE\n";
-    content += "─────────────────────────\n\n";
-    content += "Your user profile helps ChatM4L\n";
-    content += "understand your musical style.\n\n";
-    content += "Edit: core/user.md\n\n";
-    content += "─────────────────────────\n\n";
-    content += "Include:\n";
-    content += "• Genres & influences\n";
-    content += "• Reference artists\n";
-    content += "• Sound preferences\n";
-    content += "• Hardware & plugins";
-    return content;
+/**
+ * Receive text from the textedit input
+ * Called when textedit outputs on return (Enter key)
+ * Immediately sends the message
+ */
+function input() {
+    var args = Array.prototype.slice.call(arguments);
+    var message = args.join(" ");
+    if (message && message.trim() !== "") {
+        chat(message);
+    }
 }
 
-function getHelpContent() {
-    let content = "HELP\n";
-    content += "─────────────────────────\n\n";
-    content += "COMMANDS\n\n";
-    content += "/help      Show this help\n";
-    content += "/status    Show status\n";
-    content += "/newchat   Clear conversation\n";
-    content += "/reload    Reload config\n";
-    content += "/skills    List skills\n";
-    content += "/<skill>   Activate skill\n\n";
-    content += "─────────────────────────\n\n";
-    content += "TIPS\n\n";
-    content += "• Just type naturally!\n";
-    content += "• AI sees your track context\n";
-    content += "• Use skills for specialized help";
-    return content;
+/**
+ * Handle "text" message from textedit
+ * textedit sends: text <content>
+ */
+function text() {
+    post("text() called with " + arguments.length + " args\n");
+    for (var i = 0; i < arguments.length; i++) {
+        post("  arg[" + i + "] = " + arguments[i] + " (type: " + typeof arguments[i] + ")\n");
+    }
+
+    var args = Array.prototype.slice.call(arguments);
+    var message = args.join(" ");
+    post("text() message: " + message + "\n");
+
+    if (message && message.trim() !== "" && message !== "0") {
+        chat(message);
+    }
+}
+
+/**
+ * Store pending input for send button (if textedit sends on keyup instead)
+ */
+function setInput() {
+    var args = Array.prototype.slice.call(arguments);
+    pendingInput = args.join(" ");
 }
 
 // =============================================================================
@@ -215,13 +138,17 @@ function chat(userMessage) {
         return;
     }
 
-    // Switch to chat view if not already
+    // Switch to chat view if not already (tell jsui)
     if (currentView !== "chat") {
-        setView("chat");
+        outlet(OUT_CHAT, "setView", "chat");
+        currentView = "chat";
     }
 
-    // Add user message to history
+    // Add user message to display
     addToHistory("You", userMessage);
+
+    // Show thinking indicator
+    outlet(OUT_CHAT, "thinking", 1);
 
     // Get current track context
     const context = getTrackContext();
@@ -236,6 +163,9 @@ function chat(userMessage) {
 }
 
 function response(jsonString) {
+    // Hide thinking indicator
+    outlet(OUT_CHAT, "thinking", 0);
+
     try {
         const result = JSON.parse(jsonString);
 
@@ -258,6 +188,9 @@ function response(jsonString) {
 }
 
 function error() {
+    // Hide thinking indicator
+    outlet(OUT_CHAT, "thinking", 0);
+
     var message = Array.prototype.slice.call(arguments).join(" ");
     post("AI Error: " + message + "\n");
     addToHistory("System", "Error: " + message);
@@ -270,7 +203,8 @@ function error() {
 function ready() {
     nodeStatus.ready = true;
     post("AI ready\n");
-    refreshView();
+    // Trigger jsui redraw
+    outlet(OUT_CHAT, "bang");
 }
 
 function needsconfig() {
@@ -290,10 +224,8 @@ function status(jsonString) {
         nodeStatus.ready = data.ready || false;
         post("Status updated: " + nodeStatus.provider + "/" + nodeStatus.model + "\n");
 
-        // Refresh if viewing settings or skills
-        if (currentView === "settings" || currentView === "skills") {
-            refreshView();
-        }
+        // TODO: Could pass status to jsui for dynamic settings/skills display
+        // For now, jsui shows static content
     } catch (e) {
         post("Error parsing status: " + e + "\n");
     }
@@ -545,23 +477,67 @@ function stopClip(clipSlotIndex) {
 
 function addToHistory(sender, message) {
     // Send message to jsui chat display
-    // Format: message <sender> <text>
-    outlet(OUT_CHAT, "message", sender, message);
-
-    // Also keep local history for potential future use
-    const entry = sender + ": " + message;
-    chatHistory.push(entry);
-
-    if (chatHistory.length > 50) {
-        chatHistory.shift();
-    }
+    // jsui's anything() handler will receive this as: sender(message)
+    outlet(OUT_CHAT, sender, message);
 }
 
 function clearHistory() {
-    chatHistory = [];
     // Clear jsui chat display
     outlet(OUT_CHAT, "clear");
     post("Chat history cleared\n");
+}
+
+/**
+ * Called from node.script when chat is cleared
+ */
+function chatcleared() {
+    clearHistory();
+}
+
+/**
+ * Called from node.script when new chat is created
+ */
+function newchat(sessionId) {
+    clearHistory();
+    post("New chat session: " + sessionId + "\n");
+}
+
+/**
+ * Receive inputrect from jsui (for positioning textedit)
+ * This is informational - textedit position is set manually in Max
+ */
+function inputrect(x, y, w, h) {
+    post("Input rect: " + x + ", " + y + ", " + w + ", " + h + "\n");
+}
+
+/**
+ * Catch stdout from node.script (console.log output)
+ */
+function stdout() {
+    // Ignore stdout messages from node.script
+}
+
+/**
+ * Catch any unhandled messages - treat as chat input
+ */
+function anything() {
+    var name = messagename;
+    var args = Array.prototype.slice.call(arguments);
+
+    // Combine messagename + args as the full message
+    // This handles textedit output which sends raw text
+    var fullMessage = name;
+    if (args.length > 0) {
+        fullMessage += " " + args.join(" ");
+    }
+
+    // Ignore internal Max messages
+    if (name === "script" || name === "compile" || name === "loadbang") {
+        return;
+    }
+
+    post("Chat input: " + fullMessage + "\n");
+    chat(fullMessage);
 }
 
 // =============================================================================
